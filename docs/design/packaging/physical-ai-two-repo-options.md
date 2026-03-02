@@ -4,8 +4,8 @@ Two repositories. Two PyPI distributions. One namespace.
 
 **Repos:**
 
-- [`physical-ai`](https://github.com/openvinotoolkit/physical-ai) — runtime/inference library (currently private)
-- [`physical-ai-studio`](https://github.com/open-edge-platform/physical-ai-studio) — training SDK + application (going public)
+- [`physical-ai`](https://github.com/openvinotoolkit/physical-ai) — runtime/inference library (currently private, closed-source)
+- [`physical-ai-studio`](https://github.com/open-edge-platform/physical-ai-studio) — training SDK + application (public, open-source under Apache 2.0)
 
 **PyPI distributions:**
 
@@ -25,18 +25,17 @@ Both distributions share the `physicalai` namespace via PEP 420 implicit namespa
 - Core APIs return plain `dict`/`np.ndarray` only
 - Studio is **not** a PyPI package — built via npm or Docker only
 - Training SDK **is** published to PyPI as `physicalai-train`
+- **Open-source constraint** — `physical-ai-studio` is public (Apache 2.0). Code cannot be *removed* from the OSS repo after community adoption. Modules needed in `physical-ai` must be **duplicated** (developed independently in both repos), not moved. The OSS repo must remain fully functional as a standalone training SDK.
 
 ---
 
 ## Phased Rollout
 
-### Phase 1 — Open-Source Launch
-
-Timeline: immediate (3 days).
+### Phase 1 — Open-Source Launch - [DONE]
 
 `physical-ai-studio` goes public with the codebase renamed from `getiaction` to `physicalai`. All Python modules ship inside a single distribution: `physicalai-train`.
 
-```
+```text
 physical-ai-studio/                    # goes public
 ├── application/                       # FastAPI + React (not packaged)
 └── library/
@@ -73,37 +72,41 @@ from physicalai.inference import InferenceModel
 
 ---
 
-### Phase 2 — Runtime Extraction
+### Phase 2 — Runtime Development (Code Duplication)
 
 Timeline: when `physical-ai` repo goes public.
 
-Extract runtime modules from studio into the `physical-ai` repo. Publish `physicalai` (lightweight) from there. `physicalai-train` stays in studio and declares `physicalai>=0.1.0` as a dependency.
+Develop runtime modules **independently** in the `physical-ai` repo. Because `physical-ai-studio` is open-source, runtime modules (`inference/`, `capture/`, `robot/`, `benchmark/`) cannot be removed from studio — they must be **duplicated** in `physical-ai` and developed in parallel. `physicalai-train` stays in studio and declares `physicalai>=0.1.0` as a dependency.
 
 ```
 physical-ai/                           # now public
 ├── pyproject.toml                     # name = "physicalai"
 └── src/physicalai/
-    ├── inference/                     # InferenceModel
+    ├── inference/                     # InferenceModel (independent implementation)
     ├── capture/                       # Camera interfaces
     ├── robot/                         # Robot ABC
     ├── benchmark/                     # BenchmarkRunner, protocols (numpy-only)
     # NO physicalai/__init__.py
 
-physical-ai-studio/                    # training stays here
+physical-ai-studio/                    # training stays here, still fully functional
 ├── application/                       # FastAPI + React
 └── library/
     ├── pyproject.toml                 # name = "physicalai-train"
     │                                  # depends on: physicalai>=0.1.0
     └── src/physicalai/
         ├── train/
+        ├── inference/                 # InferenceModel (kept for backward compat)
         ├── policies/
         ├── data/
         ├── eval/
         ├── gyms/
+        ├── benchmark/                 # BenchmarkRunner (kept for backward compat)
         ├── cli/
         └── config/
         # NO physicalai/__init__.py
 ```
+
+**Duplication strategy:** Runtime modules exist in both repos during this phase. The `physical-ai` repo is the **canonical runtime** — it defines the public API and ships `physicalai` to PyPI. The `physical-ai-studio` repo retains its copies for backward compatibility and to remain a fully functional standalone training SDK. Over time, `physicalai-train` should prefer importing from the `physicalai` dependency rather than its own copies, but both must work independently.
 
 **Install experience:**
 
@@ -122,16 +125,18 @@ from physicalai.train import Trainer
 from physicalai.policies import ACT
 ```
 
-**What moves:**
+**What gets duplicated:**
 
-| Module        | From                 | To            |
-| ------------- | -------------------- | ------------- |
-| `inference/`  | `physical-ai-studio` | `physical-ai` |
-| `capture/`    | `physical-ai-studio` | `physical-ai` |
-| `robot/`      | `physical-ai-studio` | `physical-ai` |
-| `benchmark/`  | `physical-ai-studio` | `physical-ai` |
+| Module       | OSS (`physical-ai-studio`)     | Runtime (`physical-ai`)        | Notes                                                    |
+| ------------ | ------------------------------ | ------------------------------ | -------------------------------------------------------- |
+| `inference/` | Kept (backward compat)         | New canonical implementation   | Studio copy becomes thin wrapper or deprecated over time |
+| `capture/`   | New (if developed there first) | Canonical implementation       | May be developed directly in `physical-ai`               |
+| `robot/`     | New (if developed there first) | Canonical implementation       | May be developed directly in `physical-ai`               |
+| `benchmark/` | Kept (training benchmarks)     | New runtime-focused benchmarks | Different focus: training eval vs runtime benchmarks     |
 
-**Prerequisite:** Clean up cross-module imports. Currently `inference/` imports from `data/` and `policies/` — these dependencies must be broken before extraction.
+**Prerequisite:** Clean up cross-module imports. Currently `inference/` imports from `data/` and `policies/` — these dependencies must be broken before the runtime copy can stand alone.
+
+**Sync strategy:** API contracts (interfaces, data formats, manifest schema) must be aligned across both repos. Use shared test fixtures and integration tests to catch divergence early. Designate one developer as the "sync owner" per duplicated module.
 
 ---
 
@@ -139,10 +144,10 @@ from physicalai.policies import ACT
 
 Timeline: requires executive approval.
 
-Move training modules from studio into `physical-ai`. Both distributions publish from a single repo. Studio becomes a pure application (FastAPI + React).
+Duplicate training modules from studio into `physical-ai`. Both distributions publish from a single repo. Studio becomes a pure application (FastAPI + React). Note: this does **not** remove training code from the OSS repo — `physical-ai-studio` retains its library code for existing open-source users, but stops publishing new versions of `physicalai-train`. The `physical-ai` repo becomes the sole publisher of both PyPI distributions.
 
-```
-physical-ai/                           # owns all Python code
+```text
+physical-ai/                           # owns all Python code (publishes both dists)
 ├── packages/
 │   ├── physicalai/                    # runtime dist
 │   │   ├── pyproject.toml
@@ -168,12 +173,19 @@ physical-ai-studio/                    # pure application
 ├── application/
 │   ├── backend/                       # FastAPI
 │   └── ui/                            # React
-└── pyproject.toml                     # depends on physicalai-train
+└── pyproject.toml                     # depends on physicalai-train (from physical-ai)
+
+physical-ai-studio/ (library/)         # frozen / archived
+└── library/                           # retained for OSS users, no new releases
+    ├── pyproject.toml                 # last published version
+    └── src/physicalai/                # code stays for existing installs
 ```
 
 **Why this is the end-state:** Library code belongs in a library repo. Studio becomes a consumer, not a publisher. One repo for all Python packaging simplifies CI, versioning, and release coordination.
 
-**Why it needs approval:** Moving training out of studio changes repo ownership boundaries. This is an organizational decision, not a technical one. If rejected, Phase 2 is a stable long-term state — training stays in studio, runtime lives in `physical-ai`, namespace split works either way.
+**Open-source impact:** The `physical-ai-studio` library directory is **not deleted** — it remains available for anyone who cloned or forked the OSS repo. However, new development and PyPI releases move to `physical-ai`. A deprecation notice in the OSS repo's README directs users to `pip install physicalai-train` (now published from `physical-ai`).
+
+**Why it needs approval:** Moving training out of studio changes repo ownership boundaries. This is an organizational decision, not a technical one. If rejected, Phase 2 is a stable long-term state — training stays in studio, runtime lives in `physical-ai`, namespace split works either way. The duplication overhead in Phase 2 is manageable because the runtime modules are relatively small and have clear API boundaries.
 
 ---
 
@@ -213,11 +225,11 @@ physicalai-train  →  physicalai  →  (numpy, opencv, etc.)
 
 ### Install Matrix
 
-| User          | Install                        | Gets                                               |
-| ------------- | ------------------------------ | -------------------------------------------------- |
+| User          | Install                        | Gets                                       |
+| ------------- | ------------------------------ | ------------------------------------------ |
 | Edge deployer | `pip install physicalai`       | Inference, camera, robot, benchmark runner |
-| ML researcher | `pip install physicalai-train` | Everything (auto-pulls physicalai)                 |
-| Studio user   | Docker / npm build             | Application with physicalai-train baked in         |
+| ML researcher | `pip install physicalai-train` | Everything (auto-pulls physicalai)         |
+| Studio user   | Docker / npm build             | Application with physicalai-train baked in |
 
 ### Import Examples
 
@@ -282,14 +294,17 @@ A proof-of-concept validates PEP 420 namespace packaging across both single-repo
 
 ## Risks
 
-| Risk                                       | Mitigation                                                                          |
-| ------------------------------------------ | ----------------------------------------------------------------------------------- |
-| PEP 420 unfamiliarity                      | PoC validates both scenarios (see `poc/`); document the critical `__init__.py` rule |
-| Accidental `__init__.py` at namespace root | CI lint rule: fail if `src/physicalai/__init__.py` exists                           |
-| Cross-distribution import leaks            | CI import boundary check: `physicalai` dist must not import from training modules   |
-| Phase 3 blocked by stakeholders            | Phase 2 is a stable long-term fallback                                              |
-| Version coordination between two dists     | Pin `physicalai>=X.Y.Z` in `physicalai-train`; release runtime first                |
-| IDE support for Phase 2 multi-repo dev     | One-line `extraPaths` config for VS Code; Sources Root for PyCharm (documented)     |
+| Risk                                       | Mitigation                                                                                                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PEP 420 unfamiliarity                      | PoC validates both scenarios (see `poc/`); document the critical `__init__.py` rule                                                                        |
+| Accidental `__init__.py` at namespace root | CI lint rule: fail if `src/physicalai/__init__.py` exists                                                                                                  |
+| Cross-distribution import leaks            | CI import boundary check: `physicalai` dist must not import from training modules                                                                          |
+| Phase 3 blocked by stakeholders            | Phase 2 is a stable long-term fallback                                                                                                                     |
+| Version coordination between two dists     | Pin `physicalai>=X.Y.Z` in `physicalai-train`; release runtime first                                                                                       |
+| IDE support for Phase 2 multi-repo dev     | One-line `extraPaths` config for VS Code; Sources Root for PyCharm (documented)                                                                            |
+| **Code duplication divergence (Phase 2)**  | Shared API contracts + integration tests across repos; sync owner per module                                                                               |
+| **Duplicated maintenance burden**          | Runtime modules are small (inference, capture, robot, benchmark); clear API boundaries limit blast radius. Duplication is temporary — resolved in Phase 3. |
+| **OSS community confusion**                | Deprecation notice in studio README when Phase 3 ships; `physicalai-train` PyPI name stays the same regardless of which repo publishes it                  |
 
 ---
 
@@ -332,4 +347,4 @@ pip install physical-ai-studio-sdk  # training
 
 ---
 
-_Last Updated: 2026-02-20_
+_Last Updated: 2026-02-26_
