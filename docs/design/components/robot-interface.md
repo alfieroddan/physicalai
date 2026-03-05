@@ -219,6 +219,11 @@ import numpy as np
 class SO100:
     """Concrete implementation for the SO-100 robot arm."""
 
+    JOINT_ORDER = [
+        "shoulder_pan", "shoulder_lift", "elbow_flex",
+        "wrist_flex", "wrist_roll", "gripper",
+    ]
+
     def __init__(self, port: str):
         self.port = port
         self._connection = None
@@ -227,9 +232,15 @@ class SO100:
         self._connection = serial.Serial(self.port, baudrate=1_000_000)
 
     def disconnect(self) -> None:
-        # Stop all motors before closing connection
+        # Hold current position (keep torque enabled) before closing.
+        # This prevents the arm from dropping under gravity.
+        # The servos will hold position until power is physically removed.
+        #
+        # Alternative: move to a known safe/home position before closing,
+        # e.g. self._move_to_home_position(). This is safer if power
+        # may be cut after disconnect, but takes time to execute.
         if self._connection:
-            self._write_torque(enabled=False)
+            self._hold_position()
             self._connection.close()
             self._connection = None
 
@@ -407,8 +418,30 @@ The policy manifest declares expected hardware in dedicated `robot` and `camera`
         {
             "name": "main",
             "type": "SO-100",
-            "state": { "shape": [6], "dtype": "float32" },
-            "action": { "shape": [6], "dtype": "float32" }
+            "state": {
+                "shape": [6],
+                "dtype": "float32",
+                "joint_order": [
+                    "shoulder_pan",
+                    "shoulder_lift",
+                    "elbow_flex",
+                    "wrist_flex",
+                    "wrist_roll",
+                    "gripper"
+                ]
+            },
+            "action": {
+                "shape": [6],
+                "dtype": "float32",
+                "joint_order": [
+                    "shoulder_pan",
+                    "shoulder_lift",
+                    "elbow_flex",
+                    "wrist_flex",
+                    "wrist_roll",
+                    "gripper"
+                ]
+            }
         }
     ],
     "cameras": [
@@ -425,6 +458,10 @@ The policy manifest declares expected hardware in dedicated `robot` and `camera`
     ]
 }
 ```
+
+The `joint_order` field is optional but highly recommended. Without it, joint ordering is an implicit contract between training and deployment. If they disagree, shapes still validate but the policy can potentially receive scrambled input. This is especially dangerous for multi-arm robots where `[left, right]` vs `[right, left]` concatenation produces valid shapes with wrong semantics. When present, the runtime can compare `joint_order` against the robot's declared order and catch mismatches at startup. If absent, validation falls back to shape-only.
+
+Note that `state` and `action` may have different `joint_order`, state can include extra sensor readings (e.g., force sensors) that are not actuated.
 
 ### Pre-Connection: Inspect Policy Requirements
 
