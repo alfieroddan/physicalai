@@ -306,7 +306,13 @@ class Camera(ABC):
     @property
     @abstractmethod
     def device_id(self) -> str:
-        """Stable identifier for the physical device.
+        """Identifier for the physical device this instance targets.
+
+        Stable for the lifetime of the connection. May change across
+        reconnects for OS-assigned paths (e.g., /dev/video0).
+
+        Should match the corresponding DeviceInfo.device_id returned
+        by discover() for the same device.
 
         Examples: "/dev/video0", "serial:12345678", "rtsp://192.168.1.100/stream"
         """
