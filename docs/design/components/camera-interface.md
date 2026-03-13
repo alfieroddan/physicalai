@@ -14,11 +14,12 @@
   - [Dependencies](#dependencies)
   - [Core Interface](#core-interface)
     - [Frame](#frame)
-    - [Sensor ABC](#sensor-abc)
     - [Camera ABC](#camera-abc)
+    - [Errors](#errors)
     - [DeviceInfo](#deviceinfo)
     - [Capability Mixins](#capability-mixins)
   - [Read Semantics](#read-semantics)
+    - [Why No Iterator Protocol](#why-no-iterator-protocol)
   - [Proposed Implementations](#proposed-implementations)
     - [OpenCVCamera](#opencvcamera)
     - [RealSenseCamera](#realsensecamera)
@@ -26,6 +27,7 @@
     - [GenicamCamera](#genicamcamera)
     - [IPCamera](#ipcamera)
   - [Recorded Sources (Future)](#recorded-sources-future)
+  - [Multi-Camera Synchronization](#multi-camera-synchronization)
   - [Factory Function](#factory-function)
   - [Sharing Model](#sharing-model)
   - [Usage](#usage)
@@ -40,6 +42,9 @@
     - [API Migration Map](#api-migration-map)
     - [Migration Plan](#migration-plan)
   - [Comparison with LeRobot](#comparison-with-lerobot)
+  - [Logging](#logging)
+  - [Testing Strategy](#testing-strategy)
+  - [Configuration Validation](#configuration-validation)
   - [Open Design Decisions](#open-design-decisions)
   - [References](#references)
 
@@ -56,9 +61,11 @@ This document defines the camera/capture interface for the physical-AI ecosystem
 - **Primary API**: Dedicated camera classes (`OpenCVCamera`, `RealSenseCamera`, etc.) with explicit constructor parameters
 - **Convenience API**: Thin `create_camera()` factory for config-driven workflows
 - **Read model**: Three-tier — `read()` (blocking sequential), `read_latest()` (non-blocking latest), `async_read()` (async/await)
-- **Frame type**: `Frame` dataclass carrying image data + timestamp + sequence number
+- **Multi-camera**: `read_cameras()` / `async_read_cameras()` for temporally aligned multi-camera reads
+- **Frame type**: `Frame` frozen slotted dataclass carrying image data + timestamp + sequence number
 - **Sharing**: Explicit only — no invisible global state, no hidden reference counting
-- **Callbacks**: Removed from base class — application layer concern
+- **Callbacks**: Removed from base class. Application layer concern
+- **No iterator protocol**: `Camera` does not implement `__iter__`. Explicit `read()` calls are clearer and avoid silent error swallowing
 
 **Goal**: The best camera framework for vision and robotics applications. Clean API, production-grade quality, hardware-agnostic.
 
@@ -74,7 +81,8 @@ This document defines the camera/capture interface for the physical-AI ecosystem
 - **Dedicated classes**: Each camera type is a concrete class, not a factory string — `RealSenseCamera(serial="...")` not `create("realsense", serial="...")`
 - **Explicit sharing**: No hidden global state. Multi-consumer access is the application's responsibility.
 - **Three-tier reads**: `read()`, `read_latest()`, `async_read()` cover sequential, real-time, and async use cases
-- **Timestamped frames**: Every frame carries `timestamp` and `sequence` — no ambiguity about when data was captured
+- **Multi-camera sync**: `read_cameras()` / `async_read_cameras()` for temporally aligned multi-camera reads
+- **Timestamped frames**: Every frame carries `timestamp` and `sequence`. No ambiguity about when data was captured
 - **Capability mixins**: Optional features (depth, PTZ, format discovery) via composable mixins
 - **Zero coupling**: No imports from other `physical_ai` subpackages
 
@@ -82,17 +90,18 @@ This document defines the camera/capture interface for the physical-AI ecosystem
 
 ## Packaging Strategy
 
-`physicalai.capture` lives inside the `physical-ai` repo as a subpackage with **zero coupling** to other subpackages. It is designed as if it were standalone — no internal cross-imports — so it can be extracted into its own repository once mature.
+`physicalai.capture` lives inside the `physical-ai` repo as a subpackage with **zero coupling** to other subpackages. It is designed as if it were standalone (no internal cross-imports) so it can be extracted into its own repository once mature.
 
 ```text
 physical-ai/
 └── src/physicalai/
     └── capture/
-        ├── __init__.py          # Public API: re-exports cameras, Frame, discover_all
+        ├── __init__.py          # Public API: re-exports cameras, Frame, discover_all, read_cameras
         ├── _frame.py            # Frame dataclass
-        ├── _sensor.py           # Sensor ABC
-        ├── _camera.py           # Camera ABC (extends Sensor)
+        ├── _camera.py           # Camera ABC
         ├── _discovery.py        # DeviceInfo, discover_all()
+        ├── _sync.py             # read_cameras(), async_read_cameras()
+        ├── _errors.py           # Error hierarchy
         ├── cameras/
         │   ├── __init__.py
         │   ├── opencv.py        # OpenCVCamera
@@ -100,10 +109,6 @@ physical-ai/
         │   ├── basler.py        # BaslerCamera
         │   ├── genicam.py       # GenicamCamera
         │   └── ip.py            # IPCamera
-        ├── sources/             # Future: non-live sources
-        │   ├── __init__.py
-        │   ├── video.py         # VideoSource
-        │   └── directory.py     # ImageDirectorySource
         └── mixins/
             ├── __init__.py
             ├── depth.py         # DepthMixin
@@ -113,7 +118,7 @@ physical-ai/
 
 ```python
 from physicalai.capture import OpenCVCamera, RealSenseCamera, Frame
-from physicalai.capture import create_camera, discover_all
+from physicalai.capture import create_camera, discover_all, read_cameras
 ```
 
 **Why subpackage now, standalone later?**
@@ -129,25 +134,27 @@ from physicalai.capture import create_camera, discover_all
 ### Class Hierarchy
 
 ```text
-Sensor (ABC)                       # Base: connect/disconnect/read/read_latest/async_read
-├── Camera (ABC)                   # Adds: device discovery, hardware config (width/height/fps)
-│   ├── OpenCVCamera               # USB webcams via OpenCV
-│   ├── RealSenseCamera            # Intel RealSense (+ DepthMixin)
-│   ├── BaslerCamera               # Basler industrial cameras (pypylon)
-│   ├── GenicamCamera              # Generic GenICam devices (harvesters)
-│   └── IPCamera                   # RTSP/HTTP network cameras
-└── [Future] RecordedSource        # Non-live playback
-    ├── VideoSource                # Video file playback
-    └── ImageDirectorySource       # Image sequence playback
+Camera (ABC)                       # Base: connect/disconnect/read/read_latest/async_read
+├── OpenCVCamera                   # USB webcams via OpenCV
+├── RealSenseCamera                # Intel RealSense (+ DepthMixin)
+├── BaslerCamera                   # Basler industrial cameras (pypylon)
+├── GenicamCamera                  # Generic GenICam devices (harvesters)
+└── IPCamera                       # RTSP/HTTP network cameras
 ```
 
-`Sensor` is the universal ABC — anything that produces frames. `Camera` extends it with hardware-specific concepts (device discovery, resolution, FPS). `RecordedSource` is future work for replaying recorded data.
+`Camera` is the single ABC for all live hardware.
+
+**Future extensibility:** When non-live sources (video file playback, image directories)
+are added, they should *not* inherit from `Camera`. The semantics diverge (e.g.,
+`read_latest()` is meaningless for recorded data). Instead, a lightweight `typing.Protocol`
+can be introduced at that point to define the shared surface (`read()`, `connect()`,
+`disconnect()`, context manager) without forcing a common base class.
 
 ### Package Structure
 
-Internal modules use underscore prefix (`_frame.py`, `_sensor.py`) to signal they are not public API. Users import from `physicalai.capture` directly.
+Internal modules use underscore prefix (`_frame.py`, `_camera.py`) to signal they are not public API. Users import from `physicalai.capture` directly.
 
-Each camera backend is a separate module under `cameras/`. This keeps dependencies isolated — importing `OpenCVCamera` doesn't pull in `pypylon` or `pyrealsense2`.
+Each camera backend is a separate module under `cameras/`. This keeps dependencies isolated: importing `OpenCVCamera` doesn't pull in `pypylon` or `pyrealsense2`.
 
 Optional SDK imports must be **lazy**: camera modules should import their SDKs only when instantiated or when `connect()` is called, and raise `MissingDependencyError` with an install hint if the extra is not installed. `physicalai.capture.__init__` should avoid eager imports that force optional dependencies.
 
@@ -204,119 +211,24 @@ class Frame:
 
 **Why not just `ndarray`?**
 
-- `timestamp` answers "when was this frame captured?" — critical for multi-camera sync, latency measurement, and replay. The timestamp uses a monotonic clock at capture time; if the device provides hardware timestamps, implementations should map them to monotonic time where possible.
-- `sequence` answers "did I miss any frames?" — enables drop detection
+- `timestamp` answers "when was this frame captured?". Critical for multi-camera sync, latency measurement, and replay. The timestamp uses a monotonic clock at capture time; if the device provides hardware timestamps, implementations should map them to monotonic time where possible.
+- `sequence` answers "did I miss any frames?". Enables drop detection
 - Frozen dataclass prevents accidental mutation of metadata (the underlying `data` buffer is still mutable)
 
-### Sensor ABC
-
-The base abstraction for anything that produces frames.
-
-```python
-class Sensor(ABC):
-    """Base interface for frame acquisition."""
-
-    # === Lifecycle ===
-
-    @abstractmethod
-    def connect(self) -> None:
-        """Open the source. Must be called before reading."""
-        ...
-
-    @abstractmethod
-    def disconnect(self) -> None:
-        """Close the source and release resources."""
-        ...
-
-    @property
-    @abstractmethod
-    def is_connected(self) -> bool:
-        """Whether the source is currently open."""
-        ...
-
-    # === Reading ===
-
-    @abstractmethod
-    def read(self) -> Frame:
-        """Read the next frame. Blocks until available.
-
-        Frames are returned in sequence — no frames are skipped.
-        Use for recording, sequential processing, or any case where
-        every frame matters.
-
-        Raises:
-            NotConnectedError: If not connected.
-            CaptureError: If frame acquisition fails.
-        """
-        ...
-
-    @abstractmethod
-    def read_latest(self) -> Frame:
-        """Read the most recent frame. Non-blocking.
-
-        Returns immediately with the latest captured frame. May skip
-        intermediate frames. Use for real-time control, teleoperation,
-        or any case where freshness matters more than completeness.
-
-        Raises:
-            NotConnectedError: If not connected.
-            NoFrameError: If no frame is available.
-        """
-        ...
-
-    async def async_read(self) -> Frame:
-        """Read the next frame, yielding to the event loop while waiting.
-
-        Default implementation wraps read() in a thread pool executor.
-        Subclasses with native async support can override.
-        """
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.read)
-
-    # === Async context manager ===
-
-    async def __aenter__(self) -> Self:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.connect)
-        return self
-
-    async def __aexit__(self, *args) -> None:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.disconnect)
-
-    # === Context manager ===
-
-    def __enter__(self) -> Self:
-        self.connect()
-        return self
-
-    def __exit__(self, *args) -> None:
-        self.disconnect()
-
-    # === Iterator ===
-
-    def __iter__(self) -> Self:
-        return self
-
-    def __next__(self) -> Frame:
-        try:
-            return self.read()
-        except CaptureError:
-            raise StopIteration
-```
+**Why uint8 only?** Some industrial cameras (Basler, GenICam) natively produce 10/12/16-bit images. `physicalai.capture` normalizes all color images to `uint8` at capture time. This is a deliberate simplification: every robotics inference model in the target domain (ACT, Diffusion Policy, VLAs) expects `uint8` RGB input. Supporting mixed dtypes would complicate the `Frame` type, every consumer, and every preprocessor for a use case that doesn't exist yet. Depth data (`DepthMixin`) uses `uint16` because millimeter-precision depth inherently requires it. If full bit-depth color capture becomes necessary for industrial vision use cases, a `raw_read()` escape hatch can be added without changing the `Frame` contract.
 
 ### Camera ABC
 
-Extends `Sensor` with hardware-specific concepts.
+The single ABC for all live camera hardware. Combines lifecycle, reading, hardware config, and discovery.
 
-````python
+```python
 class ColorMode(str, Enum):
     RGB = "rgb"
     BGR = "bgr"
     GRAY = "gray"
 
 
-class Camera(Sensor):
+class Camera(ABC):
     """Abstract interface for live camera hardware."""
 
     def __init__(
@@ -331,18 +243,142 @@ class Camera(Sensor):
         self._height = height
         self._fps = fps
         self._color_mode = color_mode
+        self.__executor = None  # async read executor
 
     # Implementations must honor color_mode by converting output as needed.
     # For example, OpenCV provides BGR by default and should convert to RGB when color_mode=RGB.
 
+    # === Lifecycle ===
+
+    @abstractmethod
+    def connect(self, timeout: float = 5.0) -> None:
+        """Open the camera and verify it produces frames.
+
+        Blocks until the first frame is successfully captured, confirming
+        the hardware is operational. If no frame arrives within ``timeout``
+        seconds, raises ``CaptureTimeoutError``.
+
+        After connect() returns, read() and read_latest() are guaranteed
+        to succeed (barring subsequent hardware failures).
+
+        Args:
+            timeout: Maximum seconds to wait for the first frame.
+                Covers both hardware initialization and first-frame capture.
+
+        Raises:
+            CaptureTimeoutError: Camera opened but no frame within timeout.
+            CaptureError: Hardware-level connection failure.
+        """
+        ...
+
+    @abstractmethod
+    def _do_disconnect(self) -> None:
+        """Release hardware resources. Called by disconnect().
+
+        Subclasses implement this to release SDK handles, close devices,
+        and stop background capture loops. Do not override disconnect()
+        directly — the base class handles executor cleanup.
+        """
+        ...
+
+    def disconnect(self) -> None:
+        """Disconnect from camera hardware and release all resources.
+
+        Calls _do_disconnect() to release hardware, then shuts down the
+        async executor if it was created. Subclasses override
+        _do_disconnect(), not this method.
+
+        If an async_read() is in flight when disconnect() is called,
+        unstarted futures are cancelled. Callers should ensure no reads
+        are being awaited after disconnecting.
+        """
+        self._do_disconnect()
+        if self.__executor is not None:
+            self.__executor.shutdown(wait=False, cancel_futures=True)
+            self.__executor = None
+
+    @property
+    @abstractmethod
+    def is_connected(self) -> bool:
+        """Whether the camera is currently open."""
+        ...
+
     @property
     @abstractmethod
     def device_id(self) -> str:
-        """Stable identifier for the physical device.
+        """Identifier for the physical device this instance targets.
+
+        Stable for the lifetime of the connection. May change across
+        reconnects for OS-assigned paths (e.g., /dev/video0).
+
+        Should match the corresponding DeviceInfo.device_id returned
+        by discover() for the same device.
 
         Examples: "/dev/video0", "serial:12345678", "rtsp://192.168.1.100/stream"
         """
         ...
+
+    @property
+    def _executor(self) -> ThreadPoolExecutor:
+        """Lazy-initialized per-camera executor for async reads."""
+        if self.__executor is None:
+            self.__executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=f"capture-{self.device_id}",
+            )
+        return self.__executor
+
+    # === Reading ===
+
+    @abstractmethod
+    def read(self, timeout: float | None = None) -> Frame:
+        """Read the next frame. Blocks until available.
+
+        Frames are returned in sequence; no frames are skipped.
+        Use for recording, sequential processing, or any case where
+        every frame matters.
+
+        Args:
+            timeout: Maximum seconds to wait for a frame. None means
+                wait indefinitely. Defaults to None.
+
+        Raises:
+            NotConnectedError: If not connected.
+            CaptureTimeoutError: If no frame arrives within timeout.
+            CaptureError: If frame acquisition fails.
+        """
+        ...
+
+    @abstractmethod
+    def read_latest(self) -> Frame:
+        """Read the most recent frame. Non-blocking.
+
+        Returns immediately with the latest captured frame. May skip
+        intermediate frames. Use for real-time control, teleoperation,
+        or any case where freshness matters more than completeness.
+
+        Raises:
+            NotConnectedError: If not connected.
+            CaptureError: If frame acquisition fails.
+        """
+        ...
+
+    async def async_read(self, timeout: float | None = None) -> Frame:
+        """Read the next frame, yielding to the event loop while waiting.
+
+        Default implementation offloads read() to a dedicated per-camera
+        ThreadPoolExecutor(max_workers=1), lazily created on first async
+        call and cleaned up by disconnect(). Sync-only usage incurs no
+        thread overhead. Subclasses with native async support can override.
+
+        Args:
+            timeout: Maximum seconds to wait for a frame. None means
+                wait indefinitely.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self.read, timeout)
+
+    # === Discovery ===
 
     @classmethod
     def discover(cls) -> list[DeviceInfo]:
@@ -357,6 +393,38 @@ class Camera(Sensor):
         """Create from a configuration dictionary."""
         return cls(**config)
 
+    # === Context managers ===
+
+    def __enter__(self) -> Self:
+        self.connect()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.disconnect()
+
+    async def __aenter__(self) -> Self:
+        loop = asyncio.get_running_loop()
+        # Uses default executor. Per-camera executor doesn't exist until first async_read()
+        await loop.run_in_executor(None, self.connect)
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.disconnect)
+```
+
+**`color_mode` output shapes:**
+
+| `color_mode` | `read()` shape | dtype   | Notes                                               |
+| ------------ | -------------- | ------- | --------------------------------------------------- |
+| `RGB`        | `(H, W, 3)`   | `uint8` | Default. Converted from hardware native (e.g., BGR) |
+| `BGR`        | `(H, W, 3)`   | `uint8` | OpenCV native. Avoids conversion cost               |
+| `GRAY`       | `(H, W)`      | `uint8` | Monochrome. 2D array, **not** `(H, W, 1)`          |
+
+`color_mode` applies only to color image reads (`read()`, `async_read()`, and the RGB
+portion of `read_rgbd()`). `read_depth()` always returns `(H, W)` `uint16` regardless
+of `color_mode`.
+
 ### Errors
 
 `physicalai.capture` defines explicit error types for predictable handling:
@@ -370,15 +438,20 @@ class NotConnectedError(CaptureError):
     """Raised when read methods are called before connect()."""
 
 
-class NoFrameError(CaptureError):
-    """Raised when no frame is available for read_latest()."""
+class CaptureTimeoutError(CaptureError):
+    """Raised when a read or connect operation exceeds its timeout."""
 
 
 class MissingDependencyError(CaptureError):
     """Raised when a camera SDK extra is not installed."""
-````
 
-````
+
+class DeviceInUseError(CaptureError):
+    """Raised when connecting to a device already held by another instance.
+
+    Note: Not yet enforced. Reserved for future device exclusivity checks.
+    """
+```
 
 ### DeviceInfo
 
@@ -389,17 +462,23 @@ Metadata about a discovered camera, returned by `Camera.discover()`.
 class DeviceInfo:
     """Metadata about a discovered camera device."""
 
-    device_id: str              # Stable identifier (serial number, path, URL)
-    name: str                   # Human-readable name ("Logitech C920", "D435")
+    device_id: str              # Backend-specific identifier (e.g., "/dev/video0", index, IP)
+    name: str = ""              # Human-readable name ("Logitech C920", "D435")
+    driver: str = ""            # Backend that found it: "opencv", "realsense", "basler", "genicam"
+    hardware_id: str = ""       # Stable cross-backend ID: serial number or USB bus path
     manufacturer: str = ""      # "Intel", "Basler", etc.
     model: str = ""             # "D435", "acA1920-40gc", etc.
-````
+    metadata: dict = field(default_factory=dict)  # Backend-specific extras
+```
+
+`hardware_id` enables deduplication when the same physical device is discovered by
+multiple backends (see [Device Discovery](#device-discovery)).
 
 ### Capability Mixins
 
 Optional capabilities added via mixins. Each mixin adds a `ClassVar` flag.
 
-**DepthMixin** — for cameras with depth sensing:
+**DepthMixin**: for cameras with depth sensing:
 
 ```python
 class DepthMixin:
@@ -426,9 +505,9 @@ class DepthMixin:
         return self.read(), self.read_depth()
 ```
 
-**Note**: `read_rgbd()` returns a tuple, not a single mixed-type array. RGB data is `uint8`, depth data is `uint16` — stacking them into one array would require type coercion and lose information.
+**Note**: `read_rgbd()` returns a tuple, not a single mixed-type array. RGB data is `uint8`, depth data is `uint16`; stacking them into one array would require type coercion and lose information.
 
-**PTZMixin** — for cameras with pan-tilt-zoom:
+**PTZMixin**: for cameras with pan-tilt-zoom:
 
 ```python
 class PTZMixin:
@@ -452,7 +531,7 @@ class PTZMixin:
         self.zoom(zoom)
 ```
 
-**FormatDiscoveryMixin** — for cameras that support format enumeration:
+**FormatDiscoveryMixin**: for cameras that support format enumeration:
 
 ```python
 @dataclass
@@ -488,18 +567,18 @@ Three read methods cover all production use cases:
 | `read_latest()` | No       | Yes          | Teleoperation, real-time control, live preview |
 | `async_read()`  | Yields   | No           | FastAPI endpoints, asyncio event loops         |
 
-**`read()`** — blocks until the next frame is available. Every frame is returned in order. Use when every frame matters (recording, data collection).
+**`read()`**: blocks until the next frame is available. Every frame is returned in order. Use when every frame matters (recording, data collection). Accepts an optional `timeout` parameter; raises `CaptureTimeoutError` if no frame arrives in time.
 
 ```python
 with OpenCVCamera(index=0) as cam:
     for i in range(100):
-        frame = cam.read()
+        frame = cam.read(timeout=5.0)
         save_frame(frame.data, frame.timestamp)
 ```
 
-**`read_latest()`** — returns the most recent frame immediately. Intermediate frames may be skipped. Use when freshness matters more than completeness (teleoperation, inference). If no frame has been captured yet, it raises `NoFrameError`.
+**`read_latest()`**: returns the most recent frame immediately. Intermediate frames may be skipped. Use when freshness matters more than completeness (teleoperation, inference). Since `connect()` guarantees that at least one frame is available before returning, `read_latest()` will always succeed on a connected camera.
 
-**Capture loop and buffer** — `connect()` starts a background capture loop that fills a small ring buffer (default 2–4 frames). `read()` consumes in order; `read_latest()` returns the newest frame and may drop older ones when the buffer is full. No explicit `start/stop` is required.
+**`read_latest()` contract**: `read_latest()` must return without blocking for the next hardware frame. How this is achieved depends on the backend — most camera SDKs (OpenCV, RealSense, pypylon) maintain internal frame buffers at the OS or driver level, making the latest frame available without a dedicated capture thread. Backends whose SDKs only offer blocking reads may need an internal capture loop, but this is a subclass implementation detail, not an ABC requirement. May return the same frame as a previous call if no new frame has been captured since; use `frame.sequence` to detect duplicates.
 
 ```python
 with OpenCVCamera(index=0) as cam:
@@ -509,7 +588,20 @@ with OpenCVCamera(index=0) as cam:
         robot.send_action(action)
 ```
 
-**`async_read()`** — awaitable version of `read()`. Yields control to the event loop while waiting for the next frame. Implementations may override for native async SDKs.
+**`async_read()`**: awaitable version of `read()`. Yields control to the event loop while waiting for the next frame.
+
+Camera SDKs (OpenCV, pyrealsense2, pypylon) are blocking: a single `read()` call holds
+the calling thread until a frame arrives from hardware. In an async application, calling
+`read()` directly from a coroutine would freeze the entire event loop for the duration of
+the capture (up to 33ms at 30fps), starving all other coroutines.
+
+The default implementation offloads `read()` to a dedicated per-camera
+`ThreadPoolExecutor(max_workers=1)`, lazily created on the first `async_read()` call and
+cleaned up by `disconnect()`. Sync-only usage incurs no thread overhead. A per-camera
+executor, rather than the shared default pool, ensures that camera reads cannot contend
+with each other or with unrelated I/O tasks in the application. Subclasses with native
+async support (e.g., an RTSP backend using `asyncio` sockets) may override `async_read()`
+to avoid the thread indirection.
 
 ```python
 async def stream_frames(cam: Camera):
@@ -521,7 +613,15 @@ async def stream_frames(cam: Camera):
 
 This three-tier model is inspired by [LeRobot's camera interface](https://github.com/huggingface/lerobot/tree/main/src/lerobot/cameras), battle-tested in robotics applications.
 
-**Thread safety**: `Sensor` instances are safe to share across threads for read-only access, but concurrent reads are serialized internally. If multiple consumers need strict per-consumer ordering guarantees, create a dedicated `CameraPool` in the application layer.
+**Thread safety**: `Camera` instances are safe to share across threads for read-only access, but concurrent reads are serialized internally. If multiple consumers need strict per-consumer ordering guarantees, create a dedicated `CameraPool` in the application layer.
+
+### Why No Iterator Protocol
+
+`Camera` deliberately does not implement `__iter__` / `__next__`. A natural implementation
+would convert `CaptureError` to `StopIteration`, meaning any transient hardware error
+(USB glitch, corrupt frame) silently terminates the loop, a data-loss footgun in
+recording workflows. The explicit `read()` call in a standard `for` / `while` loop is one
+line longer and gives the caller full control over error handling.
 
 ---
 
@@ -654,10 +754,14 @@ class IPCamera(Camera):
 
 Non-live sources for replaying recorded data. Useful when the package is separated from `physicalai` and used for offline development and testing.
 
-**These are future work — not part of the initial implementation.**
+**These are future work, not part of the initial implementation.**
+
+Recorded sources will **not** inherit from `Camera`. The semantics diverge (e.g.,
+`read_latest()` is meaningless for a video file). Instead, they will be standalone classes
+that satisfy a shared `typing.Protocol` (see [Class Hierarchy](#class-hierarchy)).
 
 ```python
-class VideoSource(Sensor):
+class VideoSource:
     """Playback from video file."""
 
     def __init__(
@@ -668,7 +772,7 @@ class VideoSource(Sensor):
     ) -> None: ...
 
 
-class ImageDirectorySource(Sensor):
+class ImageDirectorySource:
     """Playback from a directory of images."""
 
     def __init__(
@@ -680,7 +784,80 @@ class ImageDirectorySource(Sensor):
     ) -> None: ...
 ```
 
-These extend `Sensor` directly (not `Camera`) since they don't represent live hardware.
+---
+
+## Multi-Camera Synchronization
+
+Reading from multiple cameras sequentially introduces inter-camera skew (~33ms per
+camera at 30fps). For multi-view inference policies (ACT, Diffusion Policy) that expect
+temporally aligned observations, this skew can degrade performance during fast motions.
+
+`read_cameras()` and `async_read_cameras()` read from all cameras in parallel,
+minimizing skew to ~1–3ms (limited by OS thread scheduling).
+
+```python
+@dataclass(frozen=True)
+class SyncedFrames:
+    """Temporally aligned frames from multiple cameras."""
+    frames: dict[str, Frame]     # camera name → frame
+    max_skew_ms: float           # worst-case temporal skew: max(timestamps) - min(timestamps),
+                                 # converted to milliseconds. Measures how far apart in time
+                                 # the earliest and latest frames were captured. Lower is
+                                 # better; typical values are 1–3ms with thread-based parallel
+                                 # reads. Applications can log this to monitor sync quality
+                                 # or assert thresholds for safety-critical control loops.
+
+
+def read_cameras(
+    cameras: dict[str, Camera],
+    timeout: float = 1.0,
+    latest: bool = True,
+) -> SyncedFrames:
+    """Read one frame from each camera in parallel, minimizing temporal skew.
+
+    Spawns one thread per camera and reads simultaneously.
+    Returns when all threads complete or timeout is reached.
+
+    Args:
+        cameras: Mapping of name to connected Camera instance.
+        timeout: Max seconds to wait for all cameras to respond.
+        latest: If True (default), uses read_latest() for freshest frame.
+            If False, uses read() for sequential capture. Use False for
+            recording workflows where every frame matters.
+
+    Raises:
+        CaptureTimeoutError: One or more cameras didn't respond in time.
+        CaptureError: A camera failed during read.
+    """
+    ...
+
+
+async def async_read_cameras(
+    cameras: dict[str, Camera],
+    timeout: float = 1.0,
+    latest: bool = True,
+) -> SyncedFrames:
+    """Async version of read_cameras() using asyncio.gather.
+
+    Uses asyncio.create_task to schedule reads on all cameras
+    concurrently, then gathers the results.
+    """
+    ...
+```
+
+**Usage:**
+
+```python
+from physicalai.capture import read_cameras
+
+cameras = {"wrist": wrist_cam, "overhead": overhead_cam}
+synced = read_cameras(cameras)
+print(f"Skew: {synced.max_skew_ms:.1f}ms")  # ~1–3ms vs ~33ms sequential
+```
+
+**Hardware sync:** For sub-millisecond synchronization requirements, hardware trigger
+(genlock) is needed. This is backend-specific (e.g., RealSense GPIO, Basler trigger
+lines) and would live in specialized subclass methods, not in the general API.
 
 ---
 
@@ -697,7 +874,7 @@ def create_camera(driver: str, **kwargs) -> Camera:
     direct usage.
 
     Args:
-        driver: Camera type — "opencv", "realsense", "basler", "genicam", "ip". Driver names are lowercase and case-insensitive; unknown drivers raise `ValueError`.
+        driver: Camera type, one of "opencv", "realsense", "basler", "genicam", "ip". Driver names are lowercase and case-insensitive; unknown drivers raise `ValueError`.
         **kwargs: Forwarded to the camera constructor.
 
     Returns:
@@ -718,7 +895,24 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
     """Discover available cameras across all supported types.
 
     Returns:
-        Dict mapping driver name to list of discovered devices. All known drivers are included; drivers with missing optional dependencies return an empty list.
+        Dict mapping driver name to list of discovered devices. All known
+        drivers are included; drivers with missing optional dependencies
+        return an empty list.
+
+    Note:
+        The same physical device may appear under multiple drivers (e.g., a
+        USB camera found by both OpenCV and GenICam). Use ``hardware_id`` to
+        deduplicate across backends when needed::
+
+            all_devices = discover_all()
+            seen: set[str] = set()
+            unique: list[DeviceInfo] = []
+            for devices in all_devices.values():
+                for dev in devices:
+                    key = dev.hardware_id or f"{dev.driver}:{dev.device_id}"
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(dev)
 
     Examples:
         devices = discover_all()
@@ -735,8 +929,8 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
 
 If you need the same camera in two places, you have two options:
 
-1. **Pass the same instance** — the simplest and most explicit approach
-2. **Application-level pool** — if your app needs managed multi-consumer access, build a `CameraPool` at the application layer
+1. **Pass the same instance**: the simplest and most explicit approach
+2. **Application-level pool**: if your app needs managed multi-consumer access, build a `CameraPool` at the application layer
 
 ```python
 # Option 1: Pass the instance (recommended)
@@ -750,10 +944,31 @@ record_thread = Thread(target=record_loop, args=(cam,))
 
 **Why not invisible sharing?**
 
-- Hidden global state makes testing unreliable — tests that run in parallel interfere with each other
+- Hidden global state makes testing unreliable: tests that run in parallel interfere with each other
 - Implicit behavior surprises users when two `Camera` objects silently share state
 - Config conflicts (same device, different FPS) have no clean resolution
 - Explicit passing is simple and debuggable
+
+### Device Exclusivity
+
+Creating multiple `Camera` instances targeting the same physical device is **undefined
+behavior**. The outcome depends on the backend and OS:
+
+| Backend        | Typical behavior with duplicate open                      |
+| -------------- | --------------------------------------------------------- |
+| OpenCV / V4L2  | Second `connect()` fails or produces corrupt frames       |
+| RealSense      | Both pipelines connect but compete for USB bandwidth      |
+| Basler / GenICam | SDK rejects the second open with an access error        |
+| IP Camera      | Both instances connect (read-only RTSP allows it)         |
+
+**Guidance:** Do not create multiple connected `Camera` instances for the same device.
+If you need multiple consumers, read from a single `Camera` and distribute frames in
+application code.
+
+**Future work:** Enforce one-connected-instance-per-device via a per-subclass registry
+in `connect()`, raising `DeviceInUseError` on conflicts. Each subclass would identify
+its device via a `_device_key()` method (device index, serial number, URL, etc.), and
+weak references would auto-release forgotten instances on garbage collection.
 
 ---
 
@@ -778,7 +993,7 @@ with RealSenseCamera(serial_number="12345678") as cam:
 ### Multi-Camera Setup
 
 ```python
-from physicalai.capture import OpenCVCamera, RealSenseCamera
+from physicalai.capture import OpenCVCamera, RealSenseCamera, read_cameras
 
 cameras = {
     "wrist": OpenCVCamera(index=0, fps=30),
@@ -789,7 +1004,10 @@ for cam in cameras.values():
     cam.connect()
 
 try:
-    frames = {name: cam.read() for name, cam in cameras.items()}
+    # Parallel read with temporal alignment (~1–3ms skew)
+    synced = read_cameras(cameras)
+    wrist_frame = synced.frames["wrist"]
+    overhead_frame = synced.frames["overhead"]
 finally:
     for cam in cameras.values():
         cam.disconnect()
@@ -836,12 +1054,25 @@ policy = InferenceModel.load("./exports/act_policy")
 with robot, camera:
     while True:
         frame = camera.read_latest()
+        robot_obs = robot.get_observation()
         action = policy.select_action({
             "images": {"wrist": frame.data},
-            "state": robot.get_state(),
+            "state": robot_obs["state"],
         })
         robot.send_action(action)
 ```
+
+**Inference pacing:** `read_latest()` may return the same frame if called faster than
+the camera framerate. Use `frame.sequence` to detect duplicates. Whether to skip
+redundant frames or run inference on every call (e.g., for action interpolation or
+temporal ensembling) is an application-layer decision.
+
+**Temporal alignment:** Both `Frame.timestamp` and robot `get_observation()["timestamp"]`
+use `time.monotonic()`, enabling applications to measure observation-to-action latency or
+detect excessive camera-robot skew. Formal multi-modal temporal alignment (e.g.,
+interpolating 200Hz robot state to the camera frame timestamp) is a runtime observation
+pipeline concern, not the camera library's responsibility. See
+[architecture.md](../../architecture/architecture.md) for the planned observation pipeline.
 
 ### Async (FastAPI)
 
@@ -875,7 +1106,7 @@ The application backend currently uses FrameSource in 6 files. Migration swaps F
 | `.connect()`                                  | `.connect()`                                        | Same                                     |
 | `.read()` → `(success, frame)`                | `.read()` → `Frame`                                 | Returns `Frame` (raises on failure)      |
 | `.start_async()` + `.get_latest_frame()`      | `.read_latest()`                                    | Simplified to one call                   |
-| `.stop()`                                     | (not needed)                                        | `read_latest()` is stateless             |
+| `.stop()`                                     | (not needed)                                        | No separate start/stop; managed by connect/disconnect |
 | `.disconnect()`                               | `.disconnect()`                                     | Same                                     |
 | `FrameSourceFactory.discover_devices(driver)` | `discover_all()` or `Camera.discover()`             | Direct replacement                       |
 | `.get_supported_formats()`                    | `FormatDiscoveryMixin.get_supported_formats()`      | Via mixin                                |
@@ -883,7 +1114,7 @@ The application backend currently uses FrameSource in 6 files. Migration swaps F
 
 ### API Migration Map
 
-**camera_worker.py** — sync read pattern:
+**camera_worker.py**: sync read pattern:
 
 ```python
 # Before (FrameSource)
@@ -899,7 +1130,7 @@ frame = camera.read()  # frame.data for the image
 camera.disconnect()
 ```
 
-**teleoperate_worker.py / inference_worker.py** — async latest-frame pattern:
+**teleoperate_worker.py / inference_worker.py**: async latest-frame pattern:
 
 ```python
 # Before (FrameSource)
@@ -917,7 +1148,7 @@ frame = camera.read_latest()  # frame.data for the image
 camera.disconnect()
 ```
 
-**hardware.py** — device discovery:
+**hardware.py**: device discovery:
 
 ```python
 # Before (FrameSource)
@@ -928,7 +1159,7 @@ devices = discover_all()
 # or: devices = RealSenseCamera.discover()
 ```
 
-**camera.py** — format query:
+**camera.py**: format query:
 
 ```python
 # Before (FrameSource)
@@ -943,12 +1174,12 @@ formats = camera.get_supported_formats()  # via FormatDiscoveryMixin
 
 ### Migration Plan
 
-1. **Build** `physicalai.capture` in parallel — no changes to existing application code
+1. **Build** `physicalai.capture` in parallel. No changes to existing application code
 2. **Validate** feature parity against the checklist above
 3. **Swap** in a single PR: replace FrameSource imports with `physicalai.capture` imports in all 6 backend files
 4. **Remove** FrameSource dependency from `application/backend/pyproject.toml`
 
-The application's existing retry logic (`CameraConnectionManager` with `tenacity`) stays in the application layer — error recovery is not the camera library's responsibility.
+The application's existing retry logic (`CameraConnectionManager` with `tenacity`) stays in the application layer: error recovery is not the camera library's responsibility.
 
 ---
 
@@ -956,10 +1187,11 @@ The application's existing retry logic (`CameraConnectionManager` with `tenacity
 
 | Aspect           | physicalai.capture                                 | LeRobot cameras                                   |
 | ---------------- | -------------------------------------------------- | ------------------------------------------------- |
-| Base class       | `Sensor` → `Camera`                                | `Camera` ABC                                      |
+| Base class       | `Camera` ABC (flat)                                | `Camera` ABC                                      |
 | Read model       | 3-tier: `read()`, `read_latest()`, `async_read()`  | 3-tier: `read()`, `read_latest()`, `async_read()` |
 | Frame type       | `Frame(data, timestamp, sequence)`                 | Raw `ndarray` (no metadata)                       |
-| Lifecycle        | `connect()` / `disconnect()`                       | `connect()` / `disconnect()`                      |
+| Lifecycle        | `connect(timeout)` / `disconnect()`                | `connect()` / `disconnect()`                      |
+| Multi-camera     | `read_cameras()` / `async_read_cameras()`          | Manual sequential reads                           |
 | Hardware support | OpenCV, RealSense, Basler, GenICam, IP cameras     | OpenCV, RealSense, (fewer industrial)             |
 | Depth            | `DepthMixin` with `read_depth()` → `Frame(uint16)` | Not built-in                                      |
 | PTZ              | `PTZMixin`                                         | Not built-in                                      |
@@ -967,24 +1199,84 @@ The application's existing retry logic (`CameraConnectionManager` with `tenacity
 | Discovery        | `Camera.discover()` + `discover_all()`             | Not built-in                                      |
 | Factory          | Optional `create_camera()` convenience             | Not applicable                                    |
 | Sharing          | Explicit (pass instance)                           | Explicit                                          |
+| Iterator         | Not implemented (explicit `read()` preferred)      | `__iter__` / `__next__`                           |
 
-We adopted LeRobot's three-tier read model and explicit `connect/disconnect` lifecycle. We add timestamped frames, depth/PTZ mixins, industrial camera support, and device discovery.
+We adopted LeRobot's three-tier read model and explicit `connect/disconnect` lifecycle. We add timestamped frames, depth/PTZ mixins, industrial camera support, device discovery, and multi-camera synchronization via `read_cameras()`.
+
+---
+
+## Logging
+
+`physicalai.capture` uses `loguru` for logging. The library disables its output by
+default via `logger.disable("physicalai.capture")`. Applications opt in with
+`logger.enable("physicalai.capture")`.
+
+| Level   | What gets logged                                              |
+| ------- | ------------------------------------------------------------- |
+| DEBUG   | Every frame captured (sequence, timestamp)                    |
+| INFO    | Connect/disconnect, camera parameters applied                 |
+| WARNING | Frame drops (sequence gaps)                                   |
+| ERROR   | Capture failures, SDK exceptions, timeouts                    |
+
+The library **never** configures handlers or sets levels; that is the application's
+responsibility. By default, nothing is printed.
+
+---
+
+## Testing Strategy
+
+- **Unit tests**: A `FakeCamera(Camera)` subclass that returns pre-built frames is
+  provided for testing application code without hardware. All coordination logic
+  (`read_cameras()`, `discover_all()`, error paths, timeout behavior) is tested
+  against `FakeCamera`.
+
+- **Integration tests** (future): Each backend will have hardware-gated tests behind
+  pytest markers (`@pytest.mark.opencv`, `@pytest.mark.realsense`, `@pytest.mark.basler`).
+  These will verify connect/disconnect lifecycle, frame format correctness, and timeout
+  behavior against real devices. Requires dedicated hardware runners: to be set up when
+  hardware is available.
+
+---
+
+## Configuration Validation
+
+Camera parameters (`fps`, `width`, `height`, `color_mode`) are validated at
+`connect()` time, when hardware capabilities are known. If a requested parameter is
+not supported by the hardware:
+
+- The camera applies the **nearest supported value** (e.g., requested 60fps,
+  hardware supports 30fps → runs at 30fps)
+- A **warning is logged** with the requested vs. actual value
+- The actual applied values are available via read-only properties after `connect()`:
+
+```python
+cam = OpenCVCamera(index=0, fps=60, width=1920, height=1080)
+cam.connect()
+print(cam.fps)     # 30  (hardware maximum)
+print(cam.width)   # 1920
+print(cam.height)  # 1080
+# loguru WARNING: "Requested fps=60, device supports max 30. Using 30."
+```
+
+This best-effort approach avoids hard failures in config-driven workflows where
+parameters may come from a YAML file written for different hardware. Applications
+that require exact parameters should assert after `connect()`.
 
 ---
 
 ## Open Design Decisions
 
-**1. Buffer Policy**
-What ring buffer size? What happens when the buffer is full — drop oldest or block? This affects `read()` vs `read_latest()` behavior under load. Likely: small ring buffer (2-4 frames), drop oldest.
-
-**2. Multi-Consumer Access**
+**1. Multi-Consumer Access**
 If multiple consumers need the same camera, should the library provide a `CameraPool`? Or is passing the same instance sufficient? Current position: application layer concern. Revisit if multiple teams hit this need.
 
-**3. Thread Model**
-One background capture thread per camera, or a shared thread pool? Per-camera threads are simpler but scale poorly with many cameras. Likely: per-camera threads initially, optimize later.
-
-**4. Error Recovery**
+**2. Error Recovery**
 Retry on transient failures (USB disconnect/reconnect) in the library, or leave to the application? The application backend already has `tenacity`-based retry in `CameraConnectionManager`. Current position: library raises, application retries.
+
+**3. Device Exclusivity Enforcement**
+Currently documented as undefined behavior (see [Device Exclusivity](#device-exclusivity)). Future work to enforce via per-subclass registry with `DeviceInUseError`.
+
+**4. Performance Budgets**
+Concrete benchmarks for `Frame` wrapper overhead and `read_cameras()` skew will be established after initial implementation. Target: zero-copy where possible, <5ms multi-camera skew on commodity hardware.
 
 ---
 
@@ -994,7 +1286,3 @@ Retry on transient failures (USB disconnect/reconnect) in the library, or leave 
 - [Robot Interface Design](./robot-interface.md) — Robot interface specification
 - [FrameSource Repository](https://github.com/ArendJanKramer/FrameSource) — Original camera library (reference only)
 - [LeRobot Cameras](https://github.com/huggingface/lerobot/tree/main/src/lerobot/cameras) — LeRobot's camera interface (design inspiration)
-
----
-
-_Last Updated: 2026-02-18_
