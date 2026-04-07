@@ -21,7 +21,7 @@
   - [Read Semantics](#read-semantics)
     - [Why No Iterator Protocol](#why-no-iterator-protocol)
   - [Proposed Implementations](#proposed-implementations)
-    - [OpenCVCamera](#opencvcamera)
+    - [UVCCamera](#uvccamera)
     - [RealSenseCamera](#realsensecamera)
     - [BaslerCamera](#baslercamera)
     - [GenicamCamera](#genicamcamera)
@@ -58,7 +58,7 @@ This document defines the camera/capture interface for the physical-AI ecosystem
 
 - **Package**: `physicalai.capture` — lives in `physicalai`, zero coupling to other subpackages, designed for future extraction as a standalone repo
 - **Backends**: Low-level capture code absorbed selectively from our team's FrameSource fork, rewritten under `physicalai.capture` naming — no FrameSource branding
-- **Primary API**: Dedicated camera classes (`OpenCVCamera`, `RealSenseCamera`, etc.) with explicit constructor parameters
+- **Primary API**: Dedicated camera classes (`UVCCamera`, `RealSenseCamera`, etc.) with explicit constructor parameters
 - **Convenience API**: Thin `create_camera()` factory for config-driven workflows
 - **Read model**: Three-tier — `read()` (blocking sequential), `read_latest()` (non-blocking latest), `async_read()` (async/await)
 - **Multi-camera**: `read_cameras()` / `async_read_cameras()` for temporally aligned multi-camera reads
@@ -75,7 +75,7 @@ This document defines the camera/capture interface for the physical-AI ecosystem
 
 **Design Principles:**
 
-- **Hparams-first**: Explicit constructor args with IDE autocomplete — `OpenCVCamera(index=0, fps=30, width=640)`
+- **Hparams-first**: Explicit constructor args with IDE autocomplete — `UVCCamera(device=0, fps=30, width=640)`
 - **Context manager**: Safe resource management via `with` statement
 - **Async context manager**: `async with` supported for event-loop integration
 - **Dedicated classes**: Each camera type is a concrete class, not a factory string — `RealSenseCamera(serial="...")` not `create("realsense", serial="...")`
@@ -104,7 +104,7 @@ physical-ai/
         ├── errors.py            # Error hierarchy
         ├── cameras/
         │   ├── __init__.py
-        │   ├── opencv.py        # OpenCVCamera
+        │   ├── uvccamera.py     # USB Video Class cameras
         │   ├── realsense.py     # RealSenseCamera
         │   ├── basler.py        # BaslerCamera
         │   ├── genicam.py       # GenicamCamera
@@ -117,7 +117,7 @@ physical-ai/
 ```
 
 ```python
-from physicalai.capture import OpenCVCamera, RealSenseCamera, Frame
+from physicalai.capture import UVCCamera, RealSenseCamera, Frame
 from physicalai.capture import create_camera, discover_all, read_cameras
 ```
 
@@ -135,7 +135,7 @@ from physicalai.capture import create_camera, discover_all, read_cameras
 
 ```text
 Camera (ABC)                       # Base: connect/disconnect/read/read_latest/async_read
-├── OpenCVCamera                   # USB webcams via OpenCV
+├── UVCCamera                      # USB webcams/UVC cameras
 ├── RealSenseCamera                # Intel RealSense (+ DepthMixin)
 ├── BaslerCamera                   # Basler industrial cameras (pypylon)
 ├── GenicamCamera                  # Generic GenICam devices (harvesters)
@@ -154,7 +154,7 @@ can be introduced at that point to define the shared surface (`read()`, `connect
 
 Users import from `physicalai.capture` directly; `__all__` in `__init__.py` defines the public API surface. Internal module names use plain names (no underscore prefix), consistent with the `physicalai.robot` package.
 
-Each camera backend is a separate module under `cameras/`. This keeps dependencies isolated: importing `OpenCVCamera` doesn't pull in `pypylon` or `pyrealsense2`.
+Each camera backend is a separate module under `cameras/`. This keeps dependencies isolated: importing `UVCCamera` doesn't pull in `pypylon` or `pyrealsense2`.
 
 Optional SDK imports must be **lazy**: camera modules should import their SDKs only when instantiated or when `connect()` is called, and raise `MissingDependencyError` with an install hint if the extra is not installed. `physicalai.capture.__init__` should avoid eager imports that force optional dependencies.
 
@@ -173,23 +173,34 @@ The fork maintainer continues adding features. We absorb selectively as needed, 
 
 ## Dependencies
 
-OpenCV is the only required dependency. Hardware-specific SDKs are optional extras:
+OmniCamera is the required UVC dependency for non-Linux platforms (macOS/Windows). It is installed from git until PyPI wheels are available. Hardware-specific SDKs are optional extras:
 
 ```bash
-pip install physicalai                    # Core + OpenCVCamera only
+pip install physicalai                    # Core + UVCCamera (UVC support)
 pip install physicalai[realsense]         # + Intel RealSense (pyrealsense2)
 pip install physicalai[basler]            # + Basler (pypylon)
 pip install physicalai[genicam]           # + GenICam (harvesters)
 pip install physicalai[capture]           # All camera dependencies
 ```
 
-| Camera            | Required Package | Optional Extra |
-| ----------------- | ---------------- | -------------- |
-| `OpenCVCamera`    | `opencv-python`  | (base)         |
-| `RealSenseCamera` | `pyrealsense2`   | `[realsense]`  |
-| `BaslerCamera`    | `pypylon`        | `[basler]`     |
-| `GenicamCamera`   | `harvesters`     | `[genicam]`    |
-| `IPCamera`        | `opencv-python`  | (base)         |
+OmniCamera is installed from git until PyPI wheels land:
+
+```toml
+# pyproject.toml
+omni_camera = {git = "https://github.com/ArendJanKramer/OmniCamera.git", rev = "master"}
+```
+
+> **Note:** The `opencv` backend has been removed. `backend="opencv"` raises
+> `ValueError("The 'opencv' backend has been removed. Use backend='omnicamera' or backend='auto' instead.")`.
+> OpenCV (`opencv-python`) is no longer a required dependency.
+
+| Camera            | Required Package                           | Optional Extra | Platform                   |
+| ----------------- | ------------------------------------------ | -------------- | -------------------------- |
+| `UVCCamera`       | `omni_camera` (non-Linux) / kernel (Linux) | (base)         | All (auto-selects backend) |
+| `RealSenseCamera` | `pyrealsense2`                             | `[realsense]`  | All                        |
+| `BaslerCamera`    | `pypylon`                                  | `[basler]`     | All                        |
+| `GenicamCamera`   | `harvesters`                               | `[genicam]`    | All                        |
+| `IPCamera`        | —                                          | (base)         | All                        |
 
 ---
 
@@ -246,7 +257,8 @@ class Camera(ABC):
         self.__executor = None  # async read executor
 
     # Implementations must honor color_mode by converting output as needed.
-    # For example, OpenCV provides BGR by default and should convert to RGB when color_mode=RGB.
+    # OmniCamera outputs RGB natively. BGR is obtained via [:, :, ::-1]; GRAY via
+    # weighted luma (0.299R + 0.587G + 0.114B) — no cv2 dependency required.
 
     # === Lifecycle ===
 
@@ -415,11 +427,11 @@ class Camera(ABC):
 
 **`color_mode` output shapes:**
 
-| `color_mode` | `read()` shape | dtype   | Notes                                               |
-| ------------ | -------------- | ------- | --------------------------------------------------- |
-| `RGB`        | `(H, W, 3)`    | `uint8` | Default. Converted from hardware native (e.g., BGR) |
-| `BGR`        | `(H, W, 3)`    | `uint8` | OpenCV native. Avoids conversion cost               |
-| `GRAY`       | `(H, W)`       | `uint8` | Monochrome. 2D array, **not** `(H, W, 1)`           |
+| `color_mode` | `read()` shape | dtype   | Notes                                                    |
+| ------------ | -------------- | ------- | -------------------------------------------------------- |
+| `RGB`        | `(H, W, 3)`    | `uint8` | Default. OmniCamera outputs RGB natively (no conversion) |
+| `BGR`        | `(H, W, 3)`    | `uint8` | Slice conversion: `frame[:, :, ::-1]`. No cv2 needed     |
+| `GRAY`       | `(H, W)`       | `uint8` | Weighted luma: `0.299R + 0.587G + 0.114B`. No cv2        |
 
 `color_mode` applies only to color image reads (`read()`, `async_read()`, and the RGB
 portion of `read_rgbd()`). `read_depth()` always returns `(H, W)` `uint16` regardless
@@ -464,7 +476,7 @@ class DeviceInfo:
 
     device_id: str              # Backend-specific identifier (e.g., "/dev/video0", index, IP)
     name: str = ""              # Human-readable name ("Logitech C920", "D435")
-    driver: str = ""            # Backend that found it: "opencv", "realsense", "basler", "genicam"
+    driver: str = ""            # Backend that found it: "uvc", "realsense", "basler", "genicam"
     hardware_id: str = ""       # Stable cross-backend ID: serial number or USB bus path
     manufacturer: str = ""      # "Intel", "Basler", etc.
     model: str = ""             # "D435", "acA1920-40gc", etc.
@@ -570,7 +582,7 @@ Three read methods cover all production use cases:
 **`read()`**: blocks until the next frame is available. Every frame is returned in order. Use when every frame matters (recording, data collection). Accepts an optional `timeout` parameter; raises `CaptureTimeoutError` if no frame arrives in time.
 
 ```python
-with OpenCVCamera(index=0) as cam:
+with UVCCamera(device=0) as cam:
     for i in range(100):
         frame = cam.read(timeout=5.0)
         save_frame(frame.data, frame.timestamp)
@@ -578,10 +590,10 @@ with OpenCVCamera(index=0) as cam:
 
 **`read_latest()`**: returns the most recent frame immediately. Intermediate frames may be skipped. Use when freshness matters more than completeness (teleoperation, inference). Since `connect()` guarantees that at least one frame is available before returning, `read_latest()` will always succeed on a connected camera.
 
-**`read_latest()` contract**: `read_latest()` must return without blocking for the next hardware frame. How this is achieved depends on the backend — most camera SDKs (OpenCV, RealSense, pypylon) maintain internal frame buffers at the OS or driver level, making the latest frame available without a dedicated capture thread. Backends whose SDKs only offer blocking reads may need an internal capture loop, but this is a subclass implementation detail, not an ABC requirement. May return the same frame as a previous call if no new frame has been captured since; use `frame.sequence` to detect duplicates.
+**`read_latest()` contract**: `read_latest()` must return without blocking for the next hardware frame. How this is achieved depends on the backend — OmniCamera exposes `poll_frame_np()` (non-blocking single poll), so `read_latest()` returns the cached last-good frame if the poll returns `None`. RealSense and pypylon maintain internal frame buffers at the OS or driver level, making the latest frame available without a dedicated capture thread. Backends whose SDKs only offer blocking reads may need an internal capture loop, but this is a subclass implementation detail, not an ABC requirement. May return the same frame as a previous call if no new frame has been captured since; use `frame.sequence` to detect duplicates.
 
 ```python
-with OpenCVCamera(index=0) as cam:
+with UVCCamera(device=0) as cam:
     while running:
         frame = cam.read_latest()
         action = model({"images": {"wrist": frame.data}})
@@ -590,7 +602,7 @@ with OpenCVCamera(index=0) as cam:
 
 **`async_read()`**: awaitable version of `read()`. Yields control to the event loop while waiting for the next frame.
 
-Camera SDKs (OpenCV, pyrealsense2, pypylon) are blocking: a single `read()` call holds
+Camera SDKs (OmniCamera, pyrealsense2, pypylon) are blocking at the application level: a single `read()` call holds
 the calling thread until a frame arrives from hardware. In an async application, calling
 `read()` directly from a coroutine would freeze the entire event loop for the duration of
 the capture (up to 33ms at 30fps), starving all other coroutines.
@@ -627,32 +639,70 @@ line longer and gives the caller full control over error handling.
 
 ## Proposed Implementations
 
-### OpenCVCamera
+### UVCCamera
 
-USB webcams, built-in cameras, V4L2 devices.
+USB webcams, built-in cameras, and UVC devices on **all platforms**.
+`UVCCamera` is a facade that delegates to a platform-specific backend:
+
+- **macOS/Windows/Linux**: backend via [OmniCamera](https://github.com/ArendJanKramer/OmniCamera)
+- **Linux** (optional): native V4L2 backend via V4L2 ioctls
+
+The `backend` parameter selects the backend explicitly (`"v4l2"` or `"omnicamera"`); the default is `"omnicamera"`. On Linux, pass `backend="v4l2"` to use the native backend.
+
+**Discovery** delegates to the active backend. On non-Linux, uses `omni_camera.query(only_usable=True)` which returns a `list[CameraInfo]`. If the `omni_camera` package is not installed, discovery gracefully returns `[]`.
+
+**Format negotiation** (OmniCamera backend) follows a pipeline:
+
+1. `camera.get_format_options()` — enumerate supported formats
+2. `prefer_*` chainable filters (`.prefer_width_range()`, `.prefer_height_range()`, `.prefer_fps_range()`, `.prefer_frame_format()`)
+3. `.resolve()` — best-effort match; relaxes filters and falls back to `.resolve_default()` if needed
+4. `camera.open(fmt)` — opens the device at the resolved format
+
+**Read semantics** (OmniCamera backend):
+
+- `read()`: blocking poll-loop with 1 ms sleep (`_POLL_INTERVAL_S = 0.001`); raises `CaptureTimeoutError` if no frame arrives within timeout
+- `read_latest()`: single `poll_frame_np()` call; returns cached last-good frame if poll returns `None`; raises `NotConnectedError` if not connected
+
+**Color output**: OmniCamera outputs **RGB natively** (unlike OpenCV's BGR-native output). Color mode conversions:
+
+- `RGB`: no-op (pass-through)
+- `BGR`: `frame[:, :, ::-1]` (array slice — no `cv2` dependency)
+- `GRAY`: weighted luma `0.299R + 0.587G + 0.114B` (no `cv2` dependency)
 
 ```python
-class OpenCVCamera(Camera):
-    """USB cameras and built-in webcams via OpenCV.
+class UVCCamera(Camera):
+    """Camera facade for UVC devices (USB Video Class).
 
-    ``index`` is convenient for quick prototyping but not stable across
-    reboots. For production, prefer ``device_path`` (Linux) or serial
-    number-based identification.
+    Delegates to OmniCamera (macOS/Windows) or V4L2Camera (Linux)
+    based on the ``backend`` parameter.
+
+    ``device`` is a unified selector: integer index (0, 1, ...) or
+    device path string ("/dev/video0" on Linux).
     """
 
     def __init__(
         self,
         *,
-        index: int = 0,
-        device_path: str | None = None,
-        fps: int | None = None,
-        width: int | None = None,
-        height: int | None = None,
+        device: int | str = 0,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
         color_mode: ColorMode = ColorMode.RGB,
-        rotation: int = 0,
-        warmup_s: float = 1.0,
+        backend: Literal["v4l2", "omnicamera"] = "omnicamera",
+        backend_options: dict[str, Any] | None = None,
     ) -> None: ...
+
+    @classmethod
+    def discover(cls) -> list[DeviceInfo]:
+        """List available UVC cameras.
+
+        Delegates to the platform backend. Returns empty list if the
+        required SDK is not installed (graceful degradation).
+        """
+        ...
 ```
+
+Valid backend strings are: `"v4l2"` (Linux), `"omnicamera"` (macOS/Windows).
 
 ### RealSenseCamera
 
@@ -870,22 +920,24 @@ def create_camera(driver: str, **kwargs) -> Camera:
     """Create a camera by driver name.
 
     Convenience function for config-driven instantiation. Prefer
-    dedicated classes (OpenCVCamera, RealSenseCamera, etc.) for
+    dedicated classes (UVCCamera, RealSenseCamera, etc.) for
     direct usage.
 
     Args:
-        driver: Camera type, one of "opencv", "realsense", "basler", "genicam", "ip". Driver names are lowercase and case-insensitive; unknown drivers raise `ValueError`.
+        driver: Camera type, one of "uvc", "realsense", "basler", "genicam", "ip".
+            Driver names are lowercase and case-insensitive; unknown drivers raise `ValueError`.
+            Note: "opencv" is no longer valid and raises ValueError.
         **kwargs: Forwarded to the camera constructor.
 
     Returns:
         Camera instance.
 
     Raises:
-        ValueError: If the driver name is unknown.
+        ValueError: If the driver name is unknown or is the removed "opencv" driver.
         MissingDependencyError: If the driver requires an optional SDK that is not installed.
 
     Examples:
-        cam = create_camera("opencv", index=0, fps=30)
+        cam = create_camera("uvc", device=0, fps=30)
         cam = create_camera("realsense", serial_number="12345678")
     """
     ...
@@ -901,7 +953,7 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
 
     Note:
         The same physical device may appear under multiple drivers (e.g., a
-        USB camera found by both OpenCV and GenICam). Use ``hardware_id`` to
+        USB camera found by both UVC and GenICam). Use ``hardware_id`` to
         deduplicate across backends when needed::
 
             all_devices = discover_all()
@@ -916,7 +968,7 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
 
     Examples:
         devices = discover_all()
-        # {"opencv": [DeviceInfo(...)], "realsense": [DeviceInfo(...)]}
+        # {"uvc": [DeviceInfo(...)], "realsense": [DeviceInfo(...)]}
     """
     ...
 ```
@@ -934,7 +986,7 @@ If you need the same camera in two places, you have two options:
 
 ```python
 # Option 1: Pass the instance (recommended)
-cam = OpenCVCamera(index=0)
+cam = UVCCamera(device=0)
 cam.connect()
 
 # Pass to multiple consumers explicitly
@@ -954,12 +1006,12 @@ record_thread = Thread(target=record_loop, args=(cam,))
 Creating multiple `Camera` instances targeting the same physical device is **undefined
 behavior**. The outcome depends on the backend and OS:
 
-| Backend          | Typical behavior with duplicate open                 |
-| ---------------- | ---------------------------------------------------- |
-| OpenCV / V4L2    | Second `connect()` fails or produces corrupt frames  |
-| RealSense        | Both pipelines connect but compete for USB bandwidth |
-| Basler / GenICam | SDK rejects the second open with an access error     |
-| IP Camera        | Both instances connect (read-only RTSP allows it)    |
+| Backend                    | Typical behavior with duplicate open                  |
+| -------------------------- |-------------------------------------------------------|
+| UVCCamera (V4L2/OmniCamera)| Second `connect()` fails or produces corrupt frames   |
+| RealSense                  | Both pipelines connect but compete for USB bandwidth  |
+| Basler / GenICam           | SDK rejects the second open with an access error      |
+| IP Camera                  | Both instances connect (read-only RTSP allows it)     |
 
 **Guidance:** Do not create multiple connected `Camera` instances for the same device.
 If you need multiple consumers, read from a single `Camera` and distribute frames in
@@ -977,10 +1029,10 @@ weak references would auto-release forgotten instances on garbage collection.
 ### Basic
 
 ```python
-from physicalai.capture import OpenCVCamera, RealSenseCamera
+from physicalai.capture import UVCCamera, RealSenseCamera
 
 # Single camera, context manager
-with OpenCVCamera(index=0, fps=30, width=640, height=480) as cam:
+with UVCCamera(device=0, fps=30, width=640, height=480) as cam:
     frame = cam.read()
     print(f"Got {frame.data.shape} at t={frame.timestamp:.3f}")
 
@@ -993,10 +1045,10 @@ with RealSenseCamera(serial_number="12345678") as cam:
 ### Multi-Camera Setup
 
 ```python
-from physicalai.capture import OpenCVCamera, RealSenseCamera, read_cameras
+from physicalai.capture import UVCCamera, RealSenseCamera, read_cameras
 
 cameras = {
-    "wrist": OpenCVCamera(index=0, fps=30),
+    "wrist": UVCCamera(device=0, fps=30),
     "overhead": RealSenseCamera(serial_number="12345678"),
 }
 
@@ -1016,12 +1068,12 @@ finally:
 ### Device Discovery
 
 ```python
-from physicalai.capture import OpenCVCamera, RealSenseCamera, discover_all
+from physicalai.capture import UVCCamera, RealSenseCamera, discover_all
 
-# Discover specific type
-realsense_devices = RealSenseCamera.discover()
-for dev in realsense_devices:
-    print(f"{dev.name} (serial: {dev.device_id})")
+# Discover UVC cameras
+uvc_devices = UVCCamera.discover()
+for dev in uvc_devices:
+    print(f"{dev.name} (id: {dev.device_id})")
 
 # Discover all camera types
 all_devices = discover_all()
@@ -1032,11 +1084,11 @@ for driver, devices in all_devices.items():
 ### Config-Driven
 
 ```python
-from physicalai.capture import create_camera, OpenCVCamera
+from physicalai.capture import create_camera, UVCCamera
 
 # From dict (e.g., loaded from YAML or database)
-config = {"index": 0, "fps": 30, "width": 640}
-cam = OpenCVCamera.from_config(config)
+config = {"device": 0, "fps": 30, "width": 640}
+cam = UVCCamera.from_config(config)
 
 # Factory for driver-string configs (UI dropdowns, YAML)
 cam = create_camera("realsense", serial_number="12345678", fps=30)
@@ -1078,9 +1130,9 @@ pipeline concern, not the camera library's responsibility. See
 ### Async (FastAPI)
 
 ```python
-from physicalai.capture import OpenCVCamera
+from physicalai.capture import UVCCamera
 
-camera = OpenCVCamera(index=0, fps=30)
+camera = UVCCamera(device=0, fps=30)
 camera.connect()
 
 @app.get("/frame")
@@ -1101,17 +1153,17 @@ The application backend currently uses FrameSource in 6 files. Migration swaps F
 
 ### Feature Parity Checklist
 
-| FrameSource API                               | physicalai.capture Equivalent                       | Status                                                |
-| --------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
-| `FrameSourceFactory.create(driver, **params)` | `OpenCVCamera(...)` or `create_camera(driver, ...)` | Direct replacement                                    |
-| `.connect()`                                  | `.connect()`                                        | Same                                                  |
-| `.read()` → `(success, frame)`                | `.read()` → `Frame`                                 | Returns `Frame` (raises on failure)                   |
-| `.start_async()` + `.get_latest_frame()`      | `.read_latest()`                                    | Simplified to one call                                |
-| `.stop()`                                     | (not needed)                                        | No separate start/stop; managed by connect/disconnect |
-| `.disconnect()`                               | `.disconnect()`                                     | Same                                                  |
-| `FrameSourceFactory.discover_devices(driver)` | `discover_all()` or `Camera.discover()`             | Direct replacement                                    |
-| `.get_supported_formats()`                    | `FormatDiscoveryMixin.get_supported_formats()`      | Via mixin                                             |
-| `.attach_processor()`                         | Removed                                             | Was broken in production (commented out)              |
+| FrameSource API                               | physicalai.capture Equivalent                            | Status                                                |
+| --------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------- |
+| `FrameSourceFactory.create(driver, **params)` | `UVCCamera(...)` or `create_camera(driver, ...)`         | Direct replacement                                    |
+| `.connect()`                                  | `.connect()`                                             | Same                                                  |
+| `.read()` → `(success, frame)`                | `.read()` → `Frame`                                      | Returns `Frame` (raises on failure)                   |
+| `.start_async()` + `.get_latest_frame()`      | `.read_latest()`                                         | Simplified to one call                                |
+| `.stop()`                                     | (not needed)                                             | No separate start/stop; managed by connect/disconnect |
+| `.disconnect()`                               | `.disconnect()`                                          | Same                                                  |
+| `FrameSourceFactory.discover_devices(driver)` | `discover_all()` or `Camera.discover()`                  | Direct replacement                                    |
+| `.get_supported_formats()`                    | `FormatDiscoveryMixin.get_supported_formats()`           | Via mixin                                             |
+| `.attach_processor()`                         | Removed                                                  | Was broken in production (commented out)              |
 
 ### API Migration Map
 
@@ -1125,7 +1177,7 @@ success, frame = source.read()
 source.disconnect()
 
 # After (physicalai.capture)
-camera = create_camera(driver, **params)
+camera = create_camera(driver, **params)  # driver: "omnicamera", "v4l2", "realsense", etc.
 camera.connect()
 frame = camera.read()  # frame.data for the image
 camera.disconnect()
@@ -1186,21 +1238,21 @@ The application's existing retry logic (`CameraConnectionManager` with `tenacity
 
 ## Comparison with LeRobot
 
-| Aspect           | physicalai.capture                                 | LeRobot cameras                                   |
-| ---------------- | -------------------------------------------------- | ------------------------------------------------- |
-| Base class       | `Camera` ABC (flat)                                | `Camera` ABC                                      |
-| Read model       | 3-tier: `read()`, `read_latest()`, `async_read()`  | 3-tier: `read()`, `read_latest()`, `async_read()` |
-| Frame type       | `Frame(data, timestamp, sequence)`                 | Raw `ndarray` (no metadata)                       |
-| Lifecycle        | `connect(timeout)` / `disconnect()`                | `connect()` / `disconnect()`                      |
-| Multi-camera     | `read_cameras()` / `async_read_cameras()`          | Manual sequential reads                           |
-| Hardware support | OpenCV, RealSense, Basler, GenICam, IP cameras     | OpenCV, RealSense, (fewer industrial)             |
-| Depth            | `DepthMixin` with `read_depth()` → `Frame(uint16)` | Not built-in                                      |
-| PTZ              | `PTZMixin`                                         | Not built-in                                      |
-| Config           | `from_config()` + dataclass configs                | Pydantic `CameraConfig`                           |
-| Discovery        | `Camera.discover()` + `discover_all()`             | Not built-in                                      |
-| Factory          | Optional `create_camera()` convenience             | Not applicable                                    |
-| Sharing          | Explicit (pass instance)                           | Explicit                                          |
-| Iterator         | Not implemented (explicit `read()` preferred)      | `__iter__` / `__next__`                           |
+| Aspect           | physicalai.capture                                          | LeRobot cameras                                   |
+| ---------------- |-------------------------------------------------------------| ------------------------------------------------- |
+| Base class       | `Camera` ABC (flat)                                         | `Camera` ABC                                      |
+| Read model       | 3-tier: `read()`, `read_latest()`, `async_read()`           | 3-tier: `read()`, `read_latest()`, `async_read()` |
+| Frame type       | `Frame(data, timestamp, sequence)`                          | Raw `ndarray` (no metadata)                       |
+| Lifecycle        | `connect(timeout)` / `disconnect()`                         | `connect()` / `disconnect()`                      |
+| Multi-camera     | `read_cameras()` / `async_read_cameras()`                   | Manual sequential reads                           |
+| Hardware support | UVCCamera (all platforms), RealSense, Basler, GenICam, IP   | OpenCV, RealSense, (fewer industrial)             |
+| Depth            | `DepthMixin` with `read_depth()` → `Frame(uint16)`          | Not built-in                                      |
+| PTZ              | `PTZMixin`                                                  | Not built-in                                      |
+| Config           | `from_config()` + dataclass configs                         | Pydantic `CameraConfig`                           |
+| Discovery        | `Camera.discover()` + `discover_all()`                      | Not built-in                                      |
+| Factory          | Optional `create_camera()` convenience                      | Not applicable                                    |
+| Sharing          | Explicit (pass instance)                                    | Explicit                                          |
+| Iterator         | Not implemented (explicit `read()` preferred)               | `__iter__` / `__next__`                           |
 
 We adopted LeRobot's three-tier read model and explicit `connect/disconnect` lifecycle. We add timestamped frames, depth/PTZ mixins, industrial camera support, device discovery, and multi-camera synchronization via `read_cameras()`.
 
@@ -1232,7 +1284,7 @@ responsibility. By default, nothing is printed.
   against `FakeCamera`.
 
 - **Integration tests** (future): Each backend will have hardware-gated tests behind
-  pytest markers (`@pytest.mark.opencv`, `@pytest.mark.realsense`, `@pytest.mark.basler`).
+  pytest markers (`@pytest.mark.uvc`, `@pytest.mark.realsense`, `@pytest.mark.basler`).
   These will verify connect/disconnect lifecycle, frame format correctness, and timeout
   behavior against real devices. Requires dedicated hardware runners: to be set up when
   hardware is available.
@@ -1251,7 +1303,7 @@ not supported by the hardware:
 - The actual applied values are available via read-only properties after `connect()`:
 
 ```python
-cam = OpenCVCamera(index=0, fps=60, width=1920, height=1080)
+cam = UVCCamera(device=0, fps=60, width=1920, height=1080)
 cam.connect()
 print(cam.fps)     # 30  (hardware maximum)
 print(cam.width)   # 1920
