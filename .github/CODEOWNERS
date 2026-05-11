@@ -9,4 +9,4 @@
 docs/ @openvinotoolkit/physicalai-maintain
 
 # Security policy changes should include the security team.
-SECURITY.md @openvinotoolkit/openvino-security-managers @openvinotoolkit/physicalai-maintain
+SECURITY.md @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
