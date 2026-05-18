@@ -99,7 +99,6 @@ component_registry = ComponentRegistry()
 
 # Runners
 component_registry.register("single_pass", "physicalai.inference.runners.SinglePass")
-component_registry.register("action_chunking", "physicalai.inference.runners.ActionChunking")
 
 # Preprocessors
 component_registry.register("normalize", "physicalai.inference.preprocessors.StatsNormalizer")
@@ -111,6 +110,7 @@ component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Prep
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
+component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
