@@ -51,6 +51,7 @@ class OpenVINOAdapter(RuntimeAdapter):
         Raises:
             ImportError: If OpenVINO is not installed
             FileNotFoundError: If model files don't exist
+            RuntimeError: If model compilation fails (e.g. missing GPU drivers when ``device='GPU'``)
         """
         try:
             import openvino as ov  # noqa: PLC0415
@@ -65,7 +66,32 @@ class OpenVINOAdapter(RuntimeAdapter):
         # Load and compile model
         core = ov.Core()
         model = core.read_model(model=str(model_path))
-        self.compiled_model = core.compile_model(model=model, device_name=self.device, config=self.config)
+        try:
+            self.compiled_model = core.compile_model(model=model, device_name=self.device, config=self.config)
+        except RuntimeError as e:
+            err = str(e)
+            is_gpu = "GPU" in self.device.upper()
+            opencl_missing = "libOpenCL.so" in err
+            no_gpu_devices = is_gpu and ("m_device_map.empty()" in err or "no supported devices found" in err)
+            if is_gpu and (opencl_missing or no_gpu_devices):
+                if opencl_missing:
+                    cause = "the OpenCL loader (libOpenCL.so.1) is missing"
+                else:
+                    cause = "no Intel GPU devices were detected (compute runtime missing or device not accessible)"
+                msg = (
+                    f"OpenVINO GPU plugin failed to load: {e}\n"
+                    f"Cause: {cause}.\n"
+                    "On Debian/Ubuntu install the OpenCL loader and Intel compute runtime:\n"
+                    "  sudo apt install ocl-icd-libopencl1 intel-opencl-icd\n"
+                    "Ensure your user can access the GPU (add to the 'render' group, then re-login):\n"
+                    "  sudo usermod -aG render $USER\n"
+                    "Verify with: clinfo -l\n"
+                    "Or set device='CPU' (or 'AUTO') to run inference on the CPU. "
+                    "See https://github.com/openvinotoolkit/physicalai/tree/main/docs/getting-started/installation.md "
+                    "for details."
+                )
+                raise RuntimeError(msg) from e
+            raise
 
         # Cache input/output names
         # It's important to use the original model here, since compilation step adds extra auto-generated names
