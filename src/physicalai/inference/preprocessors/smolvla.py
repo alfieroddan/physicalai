@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import operator
+
 import cv2
 import numpy as np
 
@@ -14,91 +16,152 @@ from .base import Preprocessor
 
 
 class ResizeSmolVLA(Preprocessor):
-    """Preprocessor for resizing images for SmolVLA model using numpy operations.
+    """Preprocessor for SmolVLA inference image remap/resize/normalize/padding.
 
-    This preprocessor resizes input images to a specified resolution while maintaining
-    aspect ratio through padding. It normalizes the pixel values to the range [-1, 1]
-    and generates corresponding image masks.
-
-    Attributes:
-        image_resolution (tuple[int, int]): The target resolution for input images
-            as (height, width). Defaults to (512, 512).
+    This preprocessor handles:
+    - Remapping image keys via dictionary mapping
+    - Resizing images to specified resolution with aspect ratio preservation
+    - Normalizing pixel values to [-1, 1] range
+    - Handling missing cameras with empty placeholders
+    - Generating image masks for valid/padded regions
     """
 
-    def __init__(self, image_resolution: tuple[int, int] = (512, 512)) -> None:
-        """Initialize the SmolVLA numpy-based preprocessor.
+    _VIDEO_IMAGE_DIMS = 5
+    _BATCHED_IMAGE_DIMS = 4
+
+    def __init__(
+        self,
+        image_resolution: tuple[int, int] = (512, 512),
+        image_key_rename_map: dict[str, str] | None = None,
+        image_features: list[str] | None = None,
+        empty_cameras: int = 0,
+    ) -> None:
+        """Initialize the SmolVLA preprocessor with remapping and masking.
 
         Args:
-            image_resolution (tuple[int, int]): The target resolution for input images
-                as (height, width). Defaults to (512, 512).
+            image_resolution: Target resolution as (height, width). Defaults to (512, 512).
+            image_key_rename_map: Mapping from source image keys to target camera names.
+            image_features: Expected list of camera names in output. If empty,
+                uses values from image_key_rename_map.
+            empty_cameras: Number of missing cameras to fill with empty (padded) images.
         """
         super().__init__()
         self.image_resolution = image_resolution
+        self.image_key_rename_map = image_key_rename_map or {}
+        self.image_features = image_features or []
+        self.empty_cameras = empty_cameras
+
+    EXTRA = "extra"
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Process and prepare images for model inference.
 
-        Resizes images with padding, normalizes pixel values to [-1, 1] range,
-        and generates corresponding attention masks. Supported image formats:
-        - (B, C, H, W) or (B, H, W, C) with float32 values in [0, 1]
-        - (B, C, H, W) or (B, H, W, C) with uint8 values in [0, 255]
-
-        Args:
-            inputs: Dictionary containing IMAGES key with numpy array(s) of shape
-                    (height, width, channels) or list of such arrays.
+        Remaps image keys, resizes with aspect ratio preservation, normalizes
+        to [-1, 1], and fills missing cameras with empty placeholders.
 
         Returns:
-            Dictionary with processed:
-            - IMAGES: Stacked resized images of shape (batch_size, height, width, channels)
-                        with pixel values normalized to [-1, 1].
-            - IMAGE_MASKS: Boolean masks of shape (batch_size, height, width) indicating
-                             valid image regions (all ones for padded images).
-
-        Raises:
-            ValueError: If input images have unsupported data types.
+            Updated inputs containing processed image tensors and masks.
         """
         inputs = dict(inputs)
 
-        if IMAGES in inputs and isinstance(inputs[IMAGES], np.ndarray):
-            images = [inputs[IMAGES]]
-        elif IMAGES in inputs and isinstance(inputs[IMAGES], dict):
-            images = list(inputs[IMAGES].values())
-        else:
-            img_keys = [key for key in inputs if key.startswith(IMAGES)]
-            images = [inputs[img_keys[0]]] if len(img_keys) == 1 else [inputs[key] for key in img_keys]
+        image_items = self._collect_image_items(inputs)
 
-        img_masks = []
-        resized_images = []
-
-        for img in images:
-            if img.dtype == np.uint8:
-                img_fp32 = img.astype(np.float32) / 255.0
-            elif np.issubdtype(img.dtype, np.floating):
-                img_fp32 = img.astype(np.float32)
-            else:
-                msg = f"Unsupported image dtype: {img.dtype}"
-                raise ValueError(msg)
-
-            if img_fp32.ndim == 4 and img_fp32.shape[-1] == 3 and img_fp32.shape[1] != 3:  # noqa: PLR2004
-                img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
-
-            resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
+        keyed_images: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for key, source_img in image_items:
+            camera_key = self._map_image_key(key)
+            input_img = source_img[:, -1, :, :, :] if source_img.ndim == self._VIDEO_IMAGE_DIMS else source_img
+            resized_img = self._resize_with_pad(input_img, *self.image_resolution, pad_value=0)
             resized_img = resized_img * 2.0 - 1.0
-            bsize = resized_img.shape[0]
-            mask = np.ones(bsize, dtype=np.bool)
-            resized_images.append(resized_img)
-            img_masks.append(mask)
+            mask = np.ones(resized_img.shape[0], dtype=np.bool_)
+            keyed_images.append((camera_key, resized_img, mask))
 
-        inputs[IMAGES] = np.stack(resized_images, axis=0)
-        inputs[IMAGE_MASKS] = np.stack(img_masks, axis=0)
+        keyed_images.sort(key=operator.itemgetter(0))
+
+        expected_targets = [self._normalize_camera_name(name) for name in self.image_features]
+        if not expected_targets:
+            expected_targets = [self._normalize_camera_name(name) for name in self.image_key_rename_map.values()]
+
+        present_targets = {name for name, _, _ in keyed_images}
+        missing_expected = [name for name in expected_targets if name not in present_targets]
+        num_empty_cameras = min(self.empty_cameras, len(missing_expected))
+
+        if num_empty_cameras > 0 and keyed_images:
+            for target in missing_expected[:num_empty_cameras]:
+                keyed_images.append(
+                    (
+                        target,
+                        np.full_like(keyed_images[-1][1], -1.0),
+                        np.zeros_like(keyed_images[-1][2], dtype=np.bool_),
+                    ),
+                )
+
+        keyed_images.sort(key=operator.itemgetter(0))
+
+        inputs[IMAGES] = {name: img for name, img, _ in keyed_images}
+        inputs[IMAGE_MASKS] = {name: mask for name, _, mask in keyed_images}
+
+        extra = inputs.get(self.EXTRA)
+        if not isinstance(extra, dict):
+            extra = {}
+        for name, _, mask in keyed_images:
+            extra[f"{IMAGES}.{name}_padding_mask"] = mask
+        inputs[self.EXTRA] = extra
 
         return inputs
 
     @staticmethod
+    def _collect_image_items(inputs: dict[str, np.ndarray]) -> list[tuple[str, np.ndarray]]:
+        """Collect all image items from the input dict.
+
+        Returns:
+            List of (key, image) tuples.
+        """
+        if IMAGES in inputs and isinstance(inputs[IMAGES], dict):
+            return [(str(name), img) for name, img in inputs[IMAGES].items()]
+
+        img_keys = [key for key in inputs if key.startswith(f"{IMAGES}.")]
+        return [(key, inputs[key]) for key in img_keys]
+
+    def _map_image_key(self, key: str) -> str:
+        """Map source image key to target camera name.
+
+        Returns:
+            Normalized target camera name.
+        """
+        suffix = key.removeprefix(f"{IMAGES}.")
+        mapped = (
+            self.image_key_rename_map.get(key)
+            or self.image_key_rename_map.get(f"observation.{IMAGES}.{suffix}")
+            or self.image_key_rename_map.get(f"{IMAGES}.{suffix}")
+            or self.image_key_rename_map.get(suffix)
+            or suffix
+        )
+        return self._normalize_camera_name(str(mapped))
+
+    @staticmethod
+    def _normalize_camera_name(name: str) -> str:
+        """Normalize camera name by removing known prefixes.
+
+        Returns:
+            Camera name without any images/observation prefix.
+        """
+        if name.startswith(f"{IMAGES}."):
+            return name[len(f"{IMAGES}.") :]
+        if name.startswith(f"observation.{IMAGES}."):
+            return name[len(f"observation.{IMAGES}.") :]
+        return name
+
+    @staticmethod
     def _resize_with_pad(img: np.ndarray, width: int, height: int, pad_value: int = -1) -> np.ndarray:
-        # assume no-op when width height fits already
-        img_dim = 4
-        if img.ndim != img_dim:
+        """Resize image with aspect ratio preservation via padding.
+
+        Returns:
+            Resized and padded image batch with shape (B, C, height, width).
+
+        Raises:
+            ValueError: If input does not have shape (B, C, H, W).
+        """
+        if img.ndim != ResizeSmolVLA._BATCHED_IMAGE_DIMS:
             msg = f"(b,c,h,w) expected, but {img.shape}"
             raise ValueError(msg)
 
@@ -108,10 +171,8 @@ class ResizeSmolVLA(Preprocessor):
         resized_height = int(cur_height / ratio)
         resized_width = int(cur_width / ratio)
 
-        # Per-image cv2 bilinear resize (matches F.interpolate align_corners=False)
         batch = []
         for i in range(img.shape[0]):
-            # cv2.resize expects (H, W, C) so transpose from (C, H, W)
             hwc = np.transpose(img[i], (1, 2, 0))
             resized_hwc = cv2.resize(hwc, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
             batch.append(np.transpose(resized_hwc, (2, 0, 1)))
@@ -120,7 +181,6 @@ class ResizeSmolVLA(Preprocessor):
         pad_height = max(0, int(height - resized_height))
         pad_width = max(0, int(width - resized_width))
 
-        # pad on left and top of image
         if pad_height > 0 or pad_width > 0:
             padded = np.full(
                 (resized_img.shape[0], resized_img.shape[1], resized_height + pad_height, resized_width + pad_width),
