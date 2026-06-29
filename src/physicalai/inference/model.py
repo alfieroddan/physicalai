@@ -273,8 +273,29 @@ class InferenceModel:
             >>> next_obs, reward, done = env.step(action)
         """
         if not self._action_buffer:
-            self._action_buffer.extend(self.predict_action_chunk(observation))
+            action_chunk = self.predict_action_chunk(observation)
+            self._action_buffer.extend(action_chunk[: self._effective_chunk_size()])
         return self._action_buffer.popleft()
+
+    def _effective_chunk_size(self) -> int:
+        """Return the number of actions to queue per model invocation.
+
+        Preference order:
+        1. Runner-declared ``chunk_size`` from the manifest.
+        2. ACTION output feature leading dimension (when declared as ``(T, D)``).
+        3. Fallback to 1.
+        """
+        runner_chunk = int(self.chunk_size)
+        if runner_chunk > 1:
+            return runner_chunk
+
+        for feature in self.output_features:
+            if feature.name == ACTION and len(feature.shape) >= 2:
+                action_chunk = int(feature.shape[0])
+                if action_chunk > 0:
+                    return action_chunk
+
+        return 1
 
     def predict_action_chunk(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         """Predict a chunk of actions for the given observation.
