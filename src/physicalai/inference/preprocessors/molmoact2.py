@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.inference.constants import IMAGE_MASKS, IMAGES, STATE, TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 
 from .base import Preprocessor
 
@@ -121,6 +121,7 @@ class MolmoAct2Preprocessor(Preprocessor):
         add_control_tokens: bool = False,
         state_stats: dict[str, list[float] | np.ndarray] | None = None,
         image_keys: list[str] | None = None,
+        processor_config: dict[str, Any] | None = None,
     ) -> None:
         self.tokenizer_name_or_path = tokenizer_name_or_path
         self.num_state_tokens = int(num_state_tokens)
@@ -130,6 +131,7 @@ class MolmoAct2Preprocessor(Preprocessor):
         self.add_control_tokens = bool(add_control_tokens)
         self.image_keys = list(image_keys or [])
         self._tokenizer: Any = None
+        del processor_config
 
         self._state_q01: np.ndarray | None = None
         self._state_q99: np.ndarray | None = None
@@ -297,6 +299,28 @@ class MolmoAct2Preprocessor(Preprocessor):
                 images_by_example[idx].append(bchw[idx])
         return images_by_example
 
+    @staticmethod
+    def _pack_images(images_by_example: list[list[np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+        batch_size = len(images_by_example)
+        if batch_size == 0:
+            return np.empty((0, 0, 3, 0, 0), dtype=np.float32), np.empty((0, 0), dtype=bool)
+
+        num_images = len(images_by_example[0])
+        if any(len(example_images) != num_images for example_images in images_by_example):
+            msg = "MolmoAct2 requires a consistent number of images per batch element."
+            raise ValueError(msg)
+
+        if num_images == 0:
+            return np.empty((0, batch_size, 3, 0, 0), dtype=np.float32), np.empty((0, batch_size), dtype=bool)
+
+        image_slots: list[np.ndarray] = []
+        image_masks: list[np.ndarray] = []
+        for image_idx in range(num_images):
+            slot_images = [images_by_example[batch_idx][image_idx].astype(np.float32, copy=False) for batch_idx in range(batch_size)]
+            image_slots.append(np.stack(slot_images, axis=0))
+            image_masks.append(np.ones((batch_size,), dtype=bool))
+        return np.stack(image_slots, axis=0), np.stack(image_masks, axis=0)
+
     def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
         inputs_dict = dict(inputs)
 
@@ -322,7 +346,8 @@ class MolmoAct2Preprocessor(Preprocessor):
                 )
             )
 
-        image_batch = np.stack(flat_images, axis=0).astype(np.float32) if flat_images else np.empty((0, 3, 0, 0), dtype=np.float32)
+        del flat_images
+        images, image_masks = self._pack_images(images_by_example)
 
         text_inputs = self.tokenizer(prompt_texts, padding=True)
         input_ids = np.asarray(text_inputs["input_ids"], dtype=np.int64)
@@ -333,11 +358,9 @@ class MolmoAct2Preprocessor(Preprocessor):
         input_ids, attention_mask = self._insert_bos(input_ids, attention_mask, int(bos_token_id), int(pad_token_id))
 
         return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "image_placeholder_token_id": np.asarray(
-                int(self.tokenizer.convert_tokens_to_ids(IMAGE_PROMPT)),
-                dtype=np.int64,
-            ),
-            "images_bchw": image_batch,
+            TOKENIZED_PROMPT: input_ids,
+            TOKENIZED_PROMPT_MASK: attention_mask,
+            STATE: state,
+            IMAGES: images,
+            IMAGE_MASKS: image_masks,
         }
