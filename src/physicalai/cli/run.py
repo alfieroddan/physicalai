@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""``physicalai run`` — execute a :class:`~physicalai.runtime.PolicyRuntime`."""
+"""``physicalai run`` — execute a RobotRuntime (any pluggable action source)."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
 if TYPE_CHECKING:
     from jsonargparse import Namespace
 
-    from physicalai.runtime import PolicyRuntime
+    from physicalai.runtime import RobotRuntime
 
 logger = logging.getLogger(__name__)
 
-HELP = "Run a trained policy on robot hardware via PolicyRuntime."
+HELP = "Run a trained policy (or any action source) on robot hardware."
 _HELP_TEMPLATE = """usage: {prog} --config CONFIG [--run.duration_s SECONDS]
 
 {description}
@@ -32,24 +32,32 @@ options:
 Runtime constructor arguments are available under --runtime.* when executing
 the command. Use --print_config with a complete command to inspect the full
 jsonargparse schema.
+
+One config schema — ``action_source:`` is always explicit:
+  runtime:
+    robot: {{...}}
+    action_source:
+      class_path: physicalai.runtime.PolicySource
+      init_args: {{model: {{...}}, execution: {{...}}}}
+    fps: 30.0
 """
 
 
 def build_parser() -> ArgumentParser:
     """Build the ``run`` subcommand parser.
 
-    :class:`PolicyRuntime` is imported lazily so merely importing this module
-    (e.g. for the top-level ``physicalai --help`` listing) stays cheap.
+    One path: ``RobotRuntime`` constructor arguments (``action_source:``
+    always explicit) plus ``run()`` method arguments.
 
     Returns:
-        Parser exposing :class:`PolicyRuntime` constructor and ``run`` method args.
+        Parser for the ``physicalai run`` subcommand.
     """
-    from physicalai.runtime import PolicyRuntime  # noqa: PLC0415
+    from physicalai.runtime import RobotRuntime  # noqa: PLC0415
 
     parser = ArgumentParser(prog="physicalai run", description=HELP)
     parser.add_argument("--config", action=ActionConfigFile, help="YAML/JSON config file.")
-    parser.add_class_arguments(PolicyRuntime, "runtime")
-    parser.add_method_arguments(PolicyRuntime, "run", "run")
+    parser.add_class_arguments(RobotRuntime, "runtime")
+    parser.add_method_arguments(RobotRuntime, "run", "run")
     return parser
 
 
@@ -59,7 +67,7 @@ def print_help(prog: str) -> None:
 
 
 def run(parser: ArgumentParser, cfg: Namespace) -> int:
-    """Instantiate :class:`PolicyRuntime` from ``cfg`` and invoke ``run()``.
+    """Instantiate the runtime from ``cfg`` and invoke ``run()``.
 
     Args:
         parser: The ``run`` subcommand parser used to instantiate classes from ``cfg``.
@@ -69,19 +77,16 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
         Process exit code (``0`` on success).
     """
     init = parser.instantiate(cfg)
-    runtime: PolicyRuntime = init.runtime
-    run_kwargs = cfg.run.as_dict() if hasattr(cfg, "run") else {}
+    runtime: RobotRuntime = init.runtime
+    run_kwargs: dict = {}
+    if hasattr(cfg, "run"):
+        raw = cfg.run
+        run_kwargs = raw.as_dict() if hasattr(raw, "as_dict") else {"duration_s": raw.duration_s}
 
     with runtime:
-        stats = runtime.run(**run_kwargs)
+        steps = runtime.run(**run_kwargs)
 
-    logger.info(
-        "Run complete: %d steps, %d pops, %d holds, %d inferences",
-        stats.steps,
-        stats.total_pops,
-        stats.total_holds,
-        stats.inference_count,
-    )
+    logger.info("Run complete: %d steps", steps)
     return 0
 
 
