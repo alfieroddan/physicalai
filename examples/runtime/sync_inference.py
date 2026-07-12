@@ -34,11 +34,12 @@ import signal
 from physicalai.capture import select_cameras_interactive
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
-    ActionQueue,
-    PolicyRuntime,
-    RerunCallback, ChunkedActionQueue,
+    ChunkedActionQueue,
+    PolicySource,
+    RerunCallback,
+    RobotRuntime,
+    SyncExecution,
 )
-from physicalai.runtime.execution import SyncExecution
 
 from utils import build_robot, parse_camera_specs, prompt_torque_disable
 
@@ -112,7 +113,6 @@ def main() -> None:
     if args.rerun != "off":
         callbacks.append(
             RerunCallback(
-                cameras=cameras,
                 log_images=True,
                 mode=args.rerun,
                 connect_addr=args.rerun_addr,
@@ -121,15 +121,19 @@ def main() -> None:
         )
 
     # ── Run (synchronous — inference blocks the loop) ──
-    runtime = PolicyRuntime(
-        robot=robot,
+    execution = SyncExecution(request_threshold=args.request_threshold)
+    policy_source = PolicySource(
         model=model,
-        execution=SyncExecution(request_threshold=args.request_threshold),
+        execution=execution,
         action_queue=ChunkedActionQueue(),  # no smoother — raw chunk playback
+        task=args.task,
+    )
+    runtime = RobotRuntime(
+        robot=robot,
+        action_source=policy_source,
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
-        task=args.task,
     )
 
     with runtime:
@@ -137,8 +141,9 @@ def main() -> None:
         if args.task:
             print(f"  task: {args.task!r}")
         print("  (inference blocks the loop — expect pauses)")
-        stats = runtime.run(duration_s=args.duration_s)
-        print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        steps = runtime.run(duration_s=args.duration_s)
+        print(f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+              f"{policy_source.action_queue.total_holds} holds")
         prompt_torque_disable(robot)
 
 

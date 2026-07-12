@@ -136,7 +136,7 @@ exclude = [
     "notebooks",
 ]
 src = ["src", "tests"]
-extend-exclude = ["docs", "examples", "tests", "notebooks"]
+extend-exclude = ["docs", "examples", "tests", "notebooks", ".github/scripts"]
 
 [tool.ruff.lint]
 select = ["ALL"]

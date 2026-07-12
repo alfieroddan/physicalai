@@ -7,8 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
-from physicalai.runtime.execution import AsyncExecution, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, SyncExecution, WorkerDiedError
 
 
 def _make_mock_model(chunk: np.ndarray | None = None) -> MagicMock:
@@ -68,6 +67,21 @@ class TestSyncExecution:
 
         model.predict_action_chunk.reset_mock()
         ex.maybe_request(obs)
+        model.predict_action_chunk.assert_not_called()
+
+    def test_maybe_request_skips_inference_when_queue_full(self) -> None:
+        chunk = np.random.randn(8, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue = ChunkedActionQueue()
+        ex = SyncExecution(request_threshold=0.5)
+        obs = {"state": np.zeros(2)}
+
+        ex.start(model, queue)
+        ex.warmup(obs)
+
+        model.predict_action_chunk.reset_mock()
+        ex.maybe_request(obs)
+
         model.predict_action_chunk.assert_not_called()
 
     def test_stop_is_noop(self) -> None:
@@ -132,6 +146,22 @@ class TestAsyncExecution:
 
         time.sleep(0.3)
         assert queue.remaining > 0
+        ex.stop()
+
+    def test_maybe_request_skips_inference_when_queue_full(self) -> None:
+        chunk = np.random.randn(10, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue = ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
+
+        ex.start(model, queue)
+        obs = {"state": np.zeros(2)}
+        ex.warmup(obs)
+
+        model.predict_action_chunk.reset_mock()
+        ex.maybe_request(obs)
+
+        model.predict_action_chunk.assert_not_called()
         ex.stop()
 
     def test_defensive_copy_of_observation(self) -> None:
@@ -246,3 +276,30 @@ class TestAsyncExecution:
         ex.maybe_request(obs)
 
         ex.stop()
+
+
+class TestRTCExecutionObsSlot:
+    def test_worker_clears_obs_slot_after_consuming_warmup_sample(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        chunk_size = 20
+        action_dim = 3
+
+        model = MagicMock()
+        model.chunk_size = chunk_size
+        model.postprocessors = []
+        model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
+
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=chunk_size, max_action_dim=action_dim, fps=30.0)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
+
+            # warmup() blocks until the worker produced the first chunk, which means
+            # it has already consumed the warmup observation. The slot must be cleared
+            # so a later below-threshold refill cannot reuse the stale warmup sample.
+            with ex._obs_lock:  # noqa: SLF001
+                assert ex._obs_slot is None  # noqa: SLF001
+        finally:
+            ex.stop()
