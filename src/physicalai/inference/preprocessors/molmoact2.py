@@ -14,9 +14,16 @@ from typing import Any
 
 import numpy as np
 
-from physicalai.inference.constants import IMAGE_MASKS, IMAGES, STATE, TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
+from physicalai.inference.constants import IMAGES, STATE, TASK
 
 from .base import Preprocessor
+from .molmoact2_image import MolmoAct2ImageProcessor as NumpyImagePatchifier
+from .molmoact2_inputs import (
+    MolmoAct2InputConfig,
+    build_batched_images,
+    default_action_dim_is_pad,
+    expand_image_placeholders,
+)
 
 ACTION_OUTPUT_TOKEN = "<action_output>"
 SETUP_START_TOKEN = "<setup_start>"
@@ -121,6 +128,8 @@ class MolmoAct2Preprocessor(Preprocessor):
         add_control_tokens: bool = False,
         state_stats: dict[str, list[float] | np.ndarray] | None = None,
         image_keys: list[str] | None = None,
+        image_processor_config: dict[str, Any] | None = None,
+        model_input_config: dict[str, Any] | None = None,
         processor_config: dict[str, Any] | None = None,
     ) -> None:
         self.tokenizer_name_or_path = tokenizer_name_or_path
@@ -132,6 +141,20 @@ class MolmoAct2Preprocessor(Preprocessor):
         self.image_keys = list(image_keys or [])
         self._tokenizer: Any = None
         del processor_config
+
+        image_cfg = dict(image_processor_config or {})
+        self._image_patchifier = NumpyImagePatchifier(
+            size=image_cfg.get("size"),
+            image_mean=image_cfg.get("image_mean"),
+            image_std=image_cfg.get("image_std"),
+            crop_mode=str(image_cfg.get("crop_mode", "resize")),
+            patch_size=int(image_cfg.get("patch_size", 14)),
+            pooling_size=image_cfg.get("pooling_size"),
+        )
+
+        self._input_config = (
+            MolmoAct2InputConfig(**dict(model_input_config)) if model_input_config is not None else None
+        )
 
         self._state_q01: np.ndarray | None = None
         self._state_q99: np.ndarray | None = None
@@ -300,28 +323,67 @@ class MolmoAct2Preprocessor(Preprocessor):
         return images_by_example
 
     @staticmethod
-    def _pack_images(images_by_example: list[list[np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
-        batch_size = len(images_by_example)
-        if batch_size == 0:
-            return np.empty((0, 0, 3, 0, 0), dtype=np.float32), np.empty((0, 0), dtype=bool)
-
-        num_images = len(images_by_example[0])
-        if any(len(example_images) != num_images for example_images in images_by_example):
-            msg = "MolmoAct2 requires a consistent number of images per batch element."
+    def _stack_flat_images(flat_images: list[np.ndarray]) -> np.ndarray:
+        """Stack example-major ``(C, H, W)`` crops into a ``(M, C, H, W)`` batch."""
+        if not flat_images:
+            msg = "MolmoAct2 inference preprocessor requires at least one image input."
             raise ValueError(msg)
+        return np.stack([np.asarray(image, dtype=np.float32) for image in flat_images], axis=0)
 
-        if num_images == 0:
-            return np.empty((0, batch_size, 3, 0, 0), dtype=np.float32), np.empty((0, batch_size), dtype=bool)
+    def _build_model_inputs(
+        self,
+        input_ids: np.ndarray,
+        attention_mask: np.ndarray,
+        flat_images: list[np.ndarray],
+        batch_size: int,
+    ) -> dict[str, np.ndarray]:
+        """Patchify images and assemble backbone-ready model inputs.
 
-        image_slots: list[np.ndarray] = []
-        image_masks: list[np.ndarray] = []
-        for image_idx in range(num_images):
-            slot_images = [images_by_example[batch_idx][image_idx].astype(np.float32, copy=False) for batch_idx in range(batch_size)]
-            image_slots.append(np.stack(slot_images, axis=0))
-            image_masks.append(np.ones((batch_size,), dtype=bool))
-        return np.stack(image_slots, axis=0), np.stack(image_masks, axis=0)
+        Returns:
+            The exact tensor set the exported model consumes: ``input_ids``,
+            ``attention_mask``, ``token_type_ids``, ``images``, ``token_pooling``
+            and ``action_dim_is_pad``.
+        """
+        assert self._input_config is not None  # noqa: S101  (validated by caller)
+
+        image_out = self._image_patchifier(self._stack_flat_images(flat_images))
+        pixel_values = np.asarray(image_out["pixel_values"], dtype=np.float32)
+        image_token_pooling = np.asarray(image_out["image_token_pooling"], dtype=np.int64)
+        image_grids = np.asarray(image_out["image_grids"], dtype=np.int64)
+        image_num_crops = np.asarray(image_out["image_num_crops"], dtype=np.int64)
+
+        input_ids, attention_mask, token_type_ids = expand_image_placeholders(
+            config=self._input_config,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            image_grids=image_grids,
+        )
+        images, token_pooling = build_batched_images(
+            self._input_config,
+            input_ids,
+            pixel_values,
+            image_token_pooling,
+            image_grids,
+            image_num_crops,
+        )
+        action_dim_is_pad = default_action_dim_is_pad(self._input_config, batch_size=batch_size)
+
+        model_inputs: dict[str, np.ndarray] = {
+            "input_ids": input_ids.astype(np.int64),
+            "attention_mask": attention_mask.astype(np.int64),
+            "images": images.astype(np.float32),
+            "token_pooling": token_pooling.astype(np.int64),
+            "action_dim_is_pad": action_dim_is_pad,
+        }
+        if token_type_ids is not None:
+            model_inputs["token_type_ids"] = token_type_ids.astype(np.int64)
+        return model_inputs
 
     def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
+        if self._input_config is None:
+            msg = "MolmoAct2Preprocessor requires model_input_config to build model inputs."
+            raise ValueError(msg)
+
         inputs_dict = dict(inputs)
 
         state = self._extract_state(inputs_dict)
@@ -346,9 +408,6 @@ class MolmoAct2Preprocessor(Preprocessor):
                 )
             )
 
-        del flat_images
-        images, image_masks = self._pack_images(images_by_example)
-
         text_inputs = self.tokenizer(prompt_texts, padding=True)
         input_ids = np.asarray(text_inputs["input_ids"], dtype=np.int64)
         attention_mask = np.asarray(text_inputs["attention_mask"], dtype=np.int64)
@@ -357,10 +416,4 @@ class MolmoAct2Preprocessor(Preprocessor):
         pad_token_id = self.tokenizer.pad_token_id
         input_ids, attention_mask = self._insert_bos(input_ids, attention_mask, int(bos_token_id), int(pad_token_id))
 
-        return {
-            TOKENIZED_PROMPT: input_ids,
-            TOKENIZED_PROMPT_MASK: attention_mask,
-            STATE: state,
-            IMAGES: images,
-            IMAGE_MASKS: image_masks,
-        }
+        return self._build_model_inputs(input_ids, attention_mask, flat_images, batch_size)
