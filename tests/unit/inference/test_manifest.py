@@ -601,11 +601,11 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.flat_params["artifact"] == str(tmp_path / "stats.safetensors")
 
-    def test_preserves_absolute_type_based_artifact(self, tmp_path: Path) -> None:
+    def test_accepts_absolute_artifact_inside_export_dir(self, tmp_path: Path) -> None:
         absolute = str(tmp_path / "stats.safetensors")
         spec = ComponentSpec.model_validate({"type": "normalize", "artifact": absolute})
         resolved = resolve_artifact(spec, tmp_path)
-        assert resolved.flat_params["artifact"] == absolute
+        assert Path(resolved.flat_params["artifact"]).is_relative_to(tmp_path.resolve())
 
     def test_resolves_relative_class_path_based_artifact(self, tmp_path: Path) -> None:
         spec = ComponentSpec.model_validate({
@@ -615,14 +615,14 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.init_args["artifact"] == str(tmp_path / "stats.safetensors")
 
-    def test_preserves_absolute_class_path_based_artifact(self, tmp_path: Path) -> None:
+    def test_accepts_absolute_artifact_inside_export_dir_class_path(self, tmp_path: Path) -> None:
         absolute = str(tmp_path / "stats.safetensors")
         spec = ComponentSpec.model_validate({
             "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
             "init_args": {"artifact": absolute},
         })
         resolved = resolve_artifact(spec, tmp_path)
-        assert resolved.init_args["artifact"] == absolute
+        assert Path(resolved.init_args["artifact"]).is_relative_to(tmp_path.resolve())
 
     def test_no_artifact_returns_spec_unchanged(self, tmp_path: Path) -> None:
         spec = ComponentSpec.model_validate({"type": "single_pass"})
@@ -651,3 +651,47 @@ class TestResolveArtifact:
         })
         with pytest.raises(ValueError, match="escapes the export directory"):
             resolve_artifact(spec, tmp_path)
+
+    def test_rejects_absolute_artifact_outside_export_dir(self, tmp_path: Path) -> None:
+        # Regression: absolute paths previously bypassed the containment check entirely.
+        outside = str(tmp_path.parent / "other" / "secret.bin")
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": outside})
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_rejects_absolute_artifact_outside_export_dir_class_path(self, tmp_path: Path) -> None:
+        outside = str(tmp_path.parent / "other" / "secret.bin")
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
+            "init_args": {"artifact": outside},
+        })
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_hf_hub_symlink_sibling_files_discoverable(self, tmp_path: Path) -> None:
+        """The resolved artifact path must keep sibling files (e.g. OV .bin) discoverable.
+
+        OpenVINO expects model.bin to live next to model.xml.  If resolve_artifact
+        followed the HF Hub symlink and returned the blob path, OV would look for
+        the .bin inside blobs/ where it does not exist.
+        """
+        blob_xml = tmp_path / "blobs" / "sha256_xml"
+        blob_bin = tmp_path / "blobs" / "sha256_bin"
+        blob_xml.parent.mkdir()
+        blob_xml.write_bytes(b"<xml/>")
+        blob_bin.write_bytes(b"bin-weights")
+
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        (snapshot_dir / "model.xml").symlink_to(Path("../blobs/sha256_xml"))
+        (snapshot_dir / "model.bin").symlink_to(Path("../blobs/sha256_bin"))
+
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "model.xml"})
+        resolved = resolve_artifact(spec, snapshot_dir)
+
+        artifact_path = Path(resolved.flat_params["artifact"])
+        sibling_bin = artifact_path.with_suffix(".bin")
+        assert sibling_bin.exists(), (
+            f"Expected {sibling_bin} to exist next to the artifact, "
+            f"but artifact resolved to {artifact_path}"
+        )

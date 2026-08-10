@@ -74,12 +74,20 @@ class ResizeSmolVLA(Preprocessor):
             if img.dtype == np.uint8:
                 img_fp32 = img.astype(np.float32) / 255.0
             elif np.issubdtype(img.dtype, np.floating):
-                img_fp32 = img.astype(np.float32)
+                # Replace NaN/Inf before clipping; clip enforces the [0, 1] precondition.
+                img_fp32 = np.clip(np.nan_to_num(img.astype(np.float32), nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
             else:
                 msg = f"Unsupported image dtype: {img.dtype}"
                 raise ValueError(msg)
 
-            if img_fp32.ndim == 4 and img_fp32.shape[-1] == 3 and img_fp32.shape[1] != 3:  # noqa: PLR2004
+            # Heuristic: standard channel counts are {1, 2, 3, 4}; spatial dims are typically larger.
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] in {1, 2, 3, 4}:  # noqa: PLR2004
+                msg = (
+                    f"ambiguous layout: both dim 1 ({img_fp32.shape[1]}) and dim -1 ({img_fp32.shape[-1]}) "
+                    "look like standard channel counts; provide input with spatial dims > 4"
+                )
+                raise ValueError(msg)
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] not in {1, 2, 3, 4}:  # noqa: PLR2004
                 img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
 
             resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
@@ -104,9 +112,13 @@ class ResizeSmolVLA(Preprocessor):
 
         cur_height, cur_width = img.shape[2:]
 
+        if cur_height == 0 or cur_width == 0:
+            msg = f"Input image has a zero spatial dimension: shape {img.shape}"
+            raise ValueError(msg)
+
         ratio = max(cur_width / width, cur_height / height)
-        resized_height = int(cur_height / ratio)
-        resized_width = int(cur_width / ratio)
+        resized_height = max(1, min(int(cur_height / ratio), height))
+        resized_width = max(1, min(int(cur_width / ratio), width))
 
         # Per-image cv2 bilinear resize (matches F.interpolate align_corners=False)
         batch = []

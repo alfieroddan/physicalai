@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.runtime.action_sources.base import ActionSource
 from physicalai.runtime.events import MetricsEvent
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 _DEFAULT_LERP_FRAMES = 5
 
 
+@export_config(class_path="physicalai.runtime.PolicySource")
 class PolicySource(ActionSource):
     """Action source adapting a model + execution + action-queue policy pipeline."""
 
@@ -75,8 +77,12 @@ class PolicySource(ActionSource):
             self._session_id = session_id
             self._execution.set_bus(bus, session_id)
             self._execution.start(self._model, self._action_queue)
-            self._action_queue.clear()
+            # reset(): also zeroes total_pops/total_holds, so the
+            # queue's counters describe this run rather than every run so far.
+            self._action_queue.reset()
             self._last = None
+            # Re-seed on every run. connect() has just emptied the queue
+            self._warmed_up = False
 
     def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
         """Maybe request inference and return the next action.

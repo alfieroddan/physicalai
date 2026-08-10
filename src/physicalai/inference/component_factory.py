@@ -13,9 +13,11 @@ to an object instance, supporting both ``type`` + flat params and
 
 from __future__ import annotations
 
-import importlib
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ._importing import import_dotted_path
 
 if TYPE_CHECKING:
     from physicalai.inference.manifest import ComponentSpec
@@ -69,10 +71,7 @@ class ComponentRegistry:
         Returns:
             The resolved class object.
         """
-        class_path = self.resolve(name_or_path)
-        module_path, class_name = class_path.rsplit(".", maxsplit=1)
-        module = importlib.import_module(module_path)
-        return getattr(module, class_name)
+        return _import_class(self.resolve(name_or_path))
 
     def entries(self) -> dict[str, str]:
         """Return a copy of all registered entries.
@@ -106,6 +105,8 @@ component_registry.register("resize", "physicalai.inference.preprocessors.Resize
 component_registry.register("smolvla_resize", "physicalai.inference.preprocessors.ResizeSmolVLA")
 component_registry.register("new_line", "physicalai.inference.preprocessors.NewLinePreprocessor")
 component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.HFTokenizer")
+component_registry.register("molmoact2", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
+component_registry.register("molmoact2_inputs", "physicalai.inference.preprocessors.MolmoAct2ModelInputs")
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
 component_registry.register("to_float_tensor", "physicalai.inference.preprocessors.ToFloatTensorPreprocessor")
@@ -114,7 +115,7 @@ component_registry.register("molmoact2_pre", "physicalai.inference.preprocessors
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
 component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
-component_registry.register("molmoact2_post", "physicalai.inference.postprocessors.MolmoAct2Postprocessor")
+component_registry.register("molmoact2_postprocess", "physicalai.inference.postprocessors.MolmoAct2Postprocessor")
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
@@ -132,28 +133,31 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
         The spec with resolved artifact path, or the original spec
         unchanged if no resolution is needed.
     """
-    # Canonicalize the export root once before containment checks.  Using
-    # resolve() ensures `..` segments are collapsed and symlinks are followed
-    # so `is_relative_to()` is applied to the final filesystem locations.
-    resolved_export = export_dir.resolve()
+    norm_export = Path(export_dir).resolve()
 
-    def _safe_resolve(artifact: str) -> str:
-        resolved = (export_dir / artifact).resolve()
-        if not resolved.is_relative_to(resolved_export):
+    def _resolve_artifact_path(artifact: str) -> str:
+        # Reject manifest paths that escape the export directory via
+        # "../" traversal (e.g. "../../etc/passwd").  The check is intentionally
+        # lexical (normpath, no symlink following) so that HuggingFace Hub
+        # snapshot symlinks which point from snapshot/ into a sibling blobs/
+        # store are accepted without error.
+        candidate = Path(os.path.normpath(norm_export / artifact))
+        if not candidate.is_relative_to(norm_export):
             msg = f"artifact path {artifact!r} escapes the export directory"
             raise ValueError(msg)
-        return str(resolved)
+        return str(candidate)
 
     flat = spec.flat_params
-    if "artifact" in flat and not Path(flat["artifact"]).is_absolute():
-        new_params = {**flat, "artifact": _safe_resolve(flat["artifact"])}
+    if "artifact" in flat:
+        # Absolute paths joining onto norm_export drop the left side (pathlib semantics),
+        # so _resolve_artifact_path catches absolute escapes the same as relative traversal.
+        new_params = {**flat, "artifact": _resolve_artifact_path(flat["artifact"])}
         return type(spec).model_validate({"type": spec.type, **new_params})
 
     if spec.class_path and "artifact" in spec.init_args:
         artifact = spec.init_args["artifact"]
-        if not Path(artifact).is_absolute():
-            new_init_args = {**spec.init_args, "artifact": _safe_resolve(artifact)}
-            return type(spec).model_validate({"class_path": spec.class_path, "init_args": new_init_args})
+        new_init_args = {**spec.init_args, "artifact": _resolve_artifact_path(artifact)}
+        return type(spec).model_validate({"class_path": spec.class_path, "init_args": new_init_args})
 
     return spec
 
@@ -163,10 +167,15 @@ def _import_class(class_path: str) -> type:
 
     Returns:
         The imported class object.
+
+    Raises:
+        TypeError: If the resolved object is not a class.
     """
-    module_path, class_name = class_path.rsplit(".", maxsplit=1)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
+    obj = import_dotted_path(class_path)
+    if not isinstance(obj, type):
+        msg = f"{class_path!r} does not resolve to a class (got {type(obj).__name__})"
+        raise TypeError(msg)
+    return obj
 
 
 # Maximum nesting depth for recursive component instantiation.  Unbounded

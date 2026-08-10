@@ -57,6 +57,10 @@ class FakeRobot:
     def joint_names(self) -> list[str]:
         return ["j0", "j1"]
 
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return (f"fake:{self.port}",)
+
     def connect(self) -> None:
         self._connected = True
 
@@ -186,6 +190,24 @@ class TestRunParser:
         assert "fps: 30" in output
         assert "FakeRobot" in output
 
+    def test_stop_event_absent_from_cli_surface(self) -> None:
+        """``run(stop_event=...)`` is a live object, so it is skipped from the CLI.
+
+        Without ``skip={"stop_event"}`` jsonargparse adds ``run.stop_event`` and
+        ``run.stop_event.help``, and the dispatcher then forwards
+        ``stop_event=None`` into ``run()``.
+        """
+        parser = run_module.build_parser()
+        dests = {action.dest for action in parser._actions}  # noqa: SLF001
+        assert "run.duration_s" in dests
+        assert not any(dest.startswith("run.stop_event") for dest in dests)
+        assert "stop_event" not in parser.format_help()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf), pytest.raises(SystemExit):
+            parser.parse_args([*_MINIMAL_ARGV, "--print_config"])
+        assert "stop_event" not in buf.getvalue()
+
     def test_parses_minimal_argv(self) -> None:
         parser = run_module.build_parser()
         cfg = parser.parse_args(list(_MINIMAL_ARGV))
@@ -222,6 +244,63 @@ class TestRunParser:
         assert cfg.run.duration_s == 5
         assert cfg.runtime.robot.class_path == _FAKE_ROBOT
         assert cfg.runtime.action_source.class_path == _POLICY_SOURCE
+
+    def test_config_file_accepts_shared_robots(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "teleop.yaml"
+        cfg_file.write_text(
+            "runtime:\n"
+            "  fps: 30\n"
+            "  robot:\n"
+            "    class_path: physicalai.robot.SharedRobot\n"
+            "    init_args:\n"
+            "      name: follower-arm\n"
+            "  action_source:\n"
+            "    class_path: physicalai.runtime.TeleopSource\n"
+            "    init_args:\n"
+            "      leader:\n"
+            "        class_path: physicalai.robot.SharedRobot\n"
+            "        init_args:\n"
+            "          name: leader-arm\n",
+        )
+        parser = run_module.build_parser()
+        cfg = parser.parse_args([f"--config={cfg_file}"])
+        assert cfg.runtime.robot.class_path == "physicalai.robot.SharedRobot"
+        assert cfg.runtime.action_source.init_args.leader.class_path == "physicalai.robot.SharedRobot"
+
+    def test_config_file_accepts_bare_component_export(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "export.yaml"
+        cfg_file.write_text(
+            "class_path: physicalai.runtime.RobotRuntime\n"
+            "init_args:\n"
+            "  fps: 30\n"
+            "  robot:\n"
+            f"    class_path: {_FAKE_ROBOT}\n"
+            "    init_args:\n"
+            "      port: /dev/null\n"
+            "  action_source:\n"
+            f"    class_path: {_POLICY_SOURCE}\n"
+            "    init_args:\n"
+            "      model:\n"
+            f"        class_path: {_REAL_MODEL}\n"
+            "        init_args:\n"
+            "          export_dir: /tmp/fake\n"
+            "      execution:\n"
+            f"        class_path: {_REAL_SYNC}\n",
+        )
+        for argv in ([f"--config={cfg_file}"], ["--config", str(cfg_file)]):
+            parser = run_module.build_parser()
+            cfg = parser.parse_args(argv)
+            assert cfg.runtime.fps == 30
+            assert cfg.runtime.robot.class_path == _FAKE_ROBOT
+            assert cfg.runtime.action_source.class_path == _POLICY_SOURCE
+
+    def test_bare_export_foreign_class_path_errors(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "foreign.yaml"
+        cfg_file.write_text(f"class_path: {_REAL_SYNC}\ninit_args: {{}}\n")
+        parser = run_module.build_parser()
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args([f"--config={cfg_file}"])
+        assert exc.value.code != 0
 
     def test_cli_overrides_config_file(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "runtime.yaml"
@@ -283,6 +362,46 @@ class TestRunDispatcher:
             run_module.run(parser, cfg)
 
         fake.run.assert_called_once_with(duration_s=None)
+
+    def test_never_forwards_stop_event_to_run(self) -> None:
+        """The dispatcher splats ``cfg.run``, so a leaked key would reach run()."""
+        parser = run_module.build_parser()
+        cfg = parser.parse_args([*_MINIMAL_ARGV, "--run.duration_s=3"])
+        fake = self._fake_runtime(0)
+
+        with patch.object(parser, "instantiate") as inst:
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        assert "stop_event" not in fake.run.call_args.kwargs
+
+    def test_configures_logging_before_instantiate(self) -> None:
+        parser = run_module.build_parser()
+        cfg = parser.parse_args(list(_MINIMAL_ARGV))
+        fake = self._fake_runtime(0)
+
+        with (
+            patch.object(run_module, "_configure_run_logging") as configure,
+            patch.object(parser, "instantiate") as inst,
+        ):
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        configure.assert_called_once_with(verbose=False)
+
+    def test_verbose_flag_enables_debug_logging(self) -> None:
+        parser = run_module.build_parser()
+        cfg = parser.parse_args([*_MINIMAL_ARGV, "--verbose"])
+        fake = self._fake_runtime(0)
+
+        with (
+            patch.object(run_module, "_configure_run_logging") as configure,
+            patch.object(parser, "instantiate") as inst,
+        ):
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        configure.assert_called_once_with(verbose=True)
 
 
 class TestMainDispatch:
@@ -407,8 +526,8 @@ class TestMainDispatch:
         assert exit_code == 0
         assert "fast help for pytest fit" in capsys.readouterr().out
 
-    def test_builtins_contain_run_only(self) -> None:
-        assert list(main_module._BUILTINS) == ["run"]  # noqa: SLF001
+    def test_builtins_contain_run_and_robot_only(self) -> None:
+        assert list(main_module._BUILTINS) == ["run", "robot"]  # noqa: SLF001
 
     def test_unknown_subcommand_errors(self) -> None:
         with pytest.raises(SystemExit) as exc:

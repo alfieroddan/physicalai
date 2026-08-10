@@ -1,41 +1,25 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""MolmoAct2 inference preprocessor.
-
-Builds MolmoAct2 prompts from raw task/state/images, tokenizes text, inserts BOS,
-and emits model-facing tensors that are expected outside the exported model graph.
-"""
+"""NumPy preprocessors for MolmoAct2 exported models."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
+import cv2
 import numpy as np
+from typing_extensions import override
 
-from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
+from physicalai.inference.preprocessors.base import Preprocessor
+from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
 
-from .base import Preprocessor
-from .molmoact2_image import MolmoAct2ImageProcessor as NumpyImagePatchifier
-from .molmoact2_inputs import (
-    MolmoAct2InputConfig,
-    build_batched_images,
-    default_action_dim_is_pad,
-    expand_image_placeholders,
-)
-
-ACTION_OUTPUT_TOKEN = "<action_output>"
-SETUP_START_TOKEN = "<setup_start>"
-SETUP_END_TOKEN = "<setup_end>"
-CONTROL_START_TOKEN = "<control_start>"
-CONTROL_END_TOKEN = "<control_end>"
-STATE_START_TOKEN = "<state_start>"
-STATE_END_TOKEN = "<state_end>"
-STATE_TOKEN_PREFIX = "<state_"
-IMAGE_PROMPT = "<|image|>"
-_EPS = 1e-8
-
+_STATE_START_TOKEN = "<state_start>"  # noqa: S105
+_STATE_END_TOKEN = "<state_end>"  # noqa: S105
+_STATE_TOKEN_PREFIX = "<state_"  # noqa: S105
+_ACTION_OUTPUT_TOKEN = "<action_output>"  # noqa: S105
 _TRAILING_PUNCTUATION = ".,!?;:"
 _PREFIX_PATTERNS = tuple(
     re.compile(pattern, flags=re.IGNORECASE)
@@ -44,6 +28,24 @@ _PREFIX_PATTERNS = tuple(
         r"^(?:the\s+task\s+is\s+to|your\s+task\s+is\s+to)\s+",
     )
 )
+_IMAGE_NDIM = 4
+_PACKED_IMAGE_NDIM = 5
+_NUM_CHANNELS = 3
+
+
+def _joint_transform(
+    values: np.ndarray,
+    signs: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    inverse: bool,
+) -> np.ndarray:
+    """Apply the MolmoAct2 joint-frame transform to leading dimensions."""
+    count = min(signs.size, values.shape[-1])
+    output = np.array(values, copy=True)
+    joints = values[..., :count]
+    output[..., :count] = signs[:count] * (joints - offsets[:count]) if inverse else signs[:count] * joints + offsets[:count]
+    return output
 
 
 def _normalize_text(text: str) -> str:
@@ -52,368 +54,386 @@ def _normalize_text(text: str) -> str:
         return ""
     for pattern in _PREFIX_PATTERNS:
         normalized = pattern.sub("", normalized, count=1).strip()
-    normalized = normalized.rstrip(_TRAILING_PUNCTUATION).strip()
-    return normalized.lower()
+    return normalized.rstrip(_TRAILING_PUNCTUATION).strip().lower()
 
 
-def _wrap_setup_text(setup_type: str, add_setup_tokens: bool) -> str:
-    if not setup_type:
-        return ""
-    if not add_setup_tokens:
-        return setup_type
-    if setup_type.startswith(SETUP_START_TOKEN) and setup_type.endswith(SETUP_END_TOKEN):
-        return setup_type
-    return f"{SETUP_START_TOKEN}{setup_type}{SETUP_END_TOKEN}"
+def _discrete_state_string(state: np.ndarray, num_state_tokens: int) -> str:
+    values = np.nan_to_num(np.asarray(state, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
+    values = np.clip(values, -1.0, 1.0)
+    token_ids = np.rint((values + 1.0) / 2.0 * (num_state_tokens - 1)).astype(np.int64)
+    payload = "".join(f"{_STATE_TOKEN_PREFIX}{int(token_id)}>" for token_id in token_ids.reshape(-1))
+    return f"{_STATE_START_TOKEN}{payload}{_STATE_END_TOKEN}"
 
 
-def _wrap_control_text(control_mode: str, add_control_tokens: bool) -> str:
-    if not control_mode:
-        return ""
-    if not add_control_tokens:
-        return control_mode
-    if control_mode.startswith(CONTROL_START_TOKEN) and control_mode.endswith(CONTROL_END_TOKEN):
-        return control_mode
-    return f"{CONTROL_START_TOKEN}{control_mode}{CONTROL_END_TOKEN}"
+def _wrapped_text(value: str, start: str, end: str, *, enabled: bool) -> str:
+    if not value or not enabled or (value.startswith(start) and value.endswith(end)):
+        return value
+    return f"{start}{value}{end}"
 
 
-def _build_discrete_state_string(state: np.ndarray, num_state_tokens: int) -> str:
-    if num_state_tokens <= 0:
-        msg = f"num_state_tokens must be > 0, got {num_state_tokens}."
-        raise ValueError(msg)
-    arr = np.asarray(state, dtype=np.float32)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=-1.0)
-    arr = np.clip(arr, -1.0, 1.0)
-    scaled = (arr + 1.0) / 2.0 * float(num_state_tokens - 1)
-    token_ids = np.clip(np.rint(scaled).astype(np.int64), 0, int(num_state_tokens) - 1).reshape(-1)
-    return f"{STATE_START_TOKEN}{''.join(f'{STATE_TOKEN_PREFIX}{int(token_id)}>' for token_id in token_ids)}{STATE_END_TOKEN}"
-
-
-def _build_robot_text(
+def _robot_prompt(
     *,
     task: str,
-    discrete_state_string: str,
+    state: np.ndarray,
+    num_state_tokens: int,
     setup_type: str,
     control_mode: str,
     add_setup_tokens: bool,
     add_control_tokens: bool,
     num_images: int,
 ) -> str:
-    setup_text = _wrap_setup_text(setup_type, add_setup_tokens=add_setup_tokens)
-    control_text = _wrap_control_text(control_mode, add_control_tokens=add_control_tokens)
-    state_clause = f" The current state of the robot is {discrete_state_string}." if discrete_state_string else ""
+    setup = _wrapped_text(setup_type, "<setup_start>", "<setup_end>", enabled=add_setup_tokens)
+    control = _wrapped_text(control_mode, "<control_start>", "<control_end>", enabled=add_control_tokens)
+    discrete_state = _discrete_state_string(state, num_state_tokens)
     prompt = (
-        f"The task is to {task}. The setup is {setup_text}.{state_clause} "
-        f"The expected control mode is {control_text}. Given these, what action should the robot take to complete the task?"
+        f"The task is to {task}. The setup is {setup}. "
+        f"The current state of the robot is {discrete_state}. "
+        f"The expected control mode is {control}. "
+        "Given these, what action should the robot take to complete the task?"
     )
-    if num_images <= 0:
-        image_prefix = ""
-    elif num_images == 1:
-        image_prefix = IMAGE_PROMPT
+    if num_images == 1:
+        image_prefix = "<|image|>"
+    elif num_images > 1:
+        image_prefix = "".join(f"Image {index + 1}<|image|>" for index in range(num_images))
     else:
-        image_prefix = "".join(f"Image {idx + 1}{IMAGE_PROMPT}" for idx in range(num_images))
-    return f"{image_prefix}<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n{ACTION_OUTPUT_TOKEN}"
+        image_prefix = ""
+    return f"{image_prefix}<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n{_ACTION_OUTPUT_TOKEN}"
 
 
 class MolmoAct2Preprocessor(Preprocessor):
-    """Build MolmoAct2 token and image inputs from raw inference observations."""
+    """Prepare MolmoAct2 prompts and images before tokenization."""
 
     def __init__(
         self,
-        tokenizer_name_or_path: str,
         *,
+        image_keys: list[str],
+        state_stats: dict[str, Any] | None = None,
+        image_size: tuple[int, int] = (378, 378),
         num_state_tokens: int = 256,
         setup_type: str = "",
         control_mode: str = "",
-        add_setup_tokens: bool = False,
-        add_control_tokens: bool = False,
-        state_stats: dict[str, list[float] | np.ndarray] | None = None,
-        image_keys: list[str] | None = None,
-        image_processor_config: dict[str, Any] | None = None,
-        model_input_config: dict[str, Any] | None = None,
-        processor_config: dict[str, Any] | None = None,
+        add_setup_tokens: bool = True,
+        add_control_tokens: bool = True,
+        adapt_to_so101: bool = False,
+        joint_signs: list[float] | None = None,
+        joint_offsets: list[float] | None = None,
     ) -> None:
-        self.tokenizer_name_or_path = tokenizer_name_or_path
-        self.num_state_tokens = int(num_state_tokens)
-        self.setup_type = str(setup_type or "")
-        self.control_mode = str(control_mode or "")
-        self.add_setup_tokens = bool(add_setup_tokens)
-        self.add_control_tokens = bool(add_control_tokens)
-        self.image_keys = list(image_keys or [])
-        self._tokenizer: Any = None
-        del processor_config
-
-        image_cfg = dict(image_processor_config or {})
-        self._image_patchifier = NumpyImagePatchifier(
-            size=image_cfg.get("size"),
-            image_mean=image_cfg.get("image_mean"),
-            image_std=image_cfg.get("image_std"),
-            crop_mode=str(image_cfg.get("crop_mode", "resize")),
-            patch_size=int(image_cfg.get("patch_size", 14)),
-            pooling_size=image_cfg.get("pooling_size"),
-        )
-
-        self._input_config = (
-            MolmoAct2InputConfig(**dict(model_input_config)) if model_input_config is not None else None
-        )
-
-        self._state_q01: np.ndarray | None = None
-        self._state_q99: np.ndarray | None = None
-        self._state_mask: np.ndarray | None = None
-        if state_stats is not None:
-            q01 = state_stats.get("q01")
-            q99 = state_stats.get("q99")
-            if q01 is not None and q99 is not None:
-                self._state_q01 = np.asarray(q01, dtype=np.float32)
-                self._state_q99 = np.asarray(q99, dtype=np.float32)
-            mask = state_stats.get("mask")
-            if mask is not None:
-                self._state_mask = np.asarray(mask, dtype=bool)
-
-    @property
-    def tokenizer(self) -> Any:
-        if self._tokenizer is None:
-            from transformers import Qwen2Tokenizer  # noqa: PLC0415
-
-            self._tokenizer = Qwen2Tokenizer.from_pretrained(
-                self.tokenizer_name_or_path,
-                local_files_only=False,
-            )
-        return self._tokenizer
-
-    @staticmethod
-    def _insert_bos(
-        input_ids: np.ndarray,
-        attention_mask: np.ndarray,
-        bos_token_id: int,
-        pad_token_id: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        if input_ids.ndim == 1:
-            input_ids = input_ids[None, :]
-            attention_mask = attention_mask[None, :]
-            squeeze = True
-        else:
-            squeeze = False
-
-        batch_size, seq_len = input_ids.shape
-        if seq_len == 0:
-            out_ids = np.full((batch_size, 1), bos_token_id, dtype=input_ids.dtype)
-            out_mask = np.ones((batch_size, 1), dtype=attention_mask.dtype)
-            return (out_ids[0], out_mask[0]) if squeeze else (out_ids, out_mask)
-
-        first_valid = (attention_mask == 1).argmax(axis=-1)
-        if np.all(input_ids[np.arange(batch_size), first_valid] == bos_token_id):
-            return (input_ids[0], attention_mask[0]) if squeeze else (input_ids, attention_mask)
-
-        out_ids = np.full((batch_size, seq_len + 1), pad_token_id, dtype=input_ids.dtype)
-        out_mask = np.zeros((batch_size, seq_len + 1), dtype=attention_mask.dtype)
-
-        src = np.tile(np.arange(seq_len), (batch_size, 1))
-        valid = src >= first_valid[:, None]
-        tgt = src + 1
-        batch_idx = np.tile(np.arange(batch_size)[:, None], (1, seq_len))
-
-        out_ids[batch_idx[valid], tgt[valid]] = input_ids[valid]
-        out_mask[batch_idx[valid], tgt[valid]] = 1
-        out_ids[np.arange(batch_size), first_valid] = bos_token_id
-        out_mask[np.arange(batch_size), first_valid] = 1
-        return (out_ids[0], out_mask[0]) if squeeze else (out_ids, out_mask)
-
-    def _normalize_state(self, state: np.ndarray) -> np.ndarray:
-        state = np.asarray(state, dtype=np.float32)
-        if self._state_q01 is None or self._state_q99 is None:
-            return np.clip(state, -1.0, 1.0)
-
-        denom = self._state_q99 - self._state_q01
-        denom = np.where(denom == 0, _EPS, denom)
-        normalized = 2.0 * (state - self._state_q01) / denom - 1.0
-        if self._state_mask is not None:
-            mask = self._state_mask
-            while mask.ndim < normalized.ndim:
-                mask = np.expand_dims(mask, axis=0)
-            normalized = np.where(mask, normalized, state)
-        return np.clip(normalized, -1.0, 1.0)
-
-    def _extract_state(self, inputs: dict[str, Any]) -> np.ndarray:
-        raw_state = inputs.get(STATE)
-        if raw_state is None:
-            raw_state = inputs.get(f"observation.{STATE}")
-        if raw_state is None:
-            msg = "MolmoAct2 inference preprocessor requires state."
+        if num_state_tokens <= 0:
+            msg = f"num_state_tokens must be > 0, got {num_state_tokens}"
+            raise ValueError(msg)
+        signs = joint_signs or []
+        offsets = joint_offsets or []
+        if len(signs) != len(offsets):
+            msg = f"joint_signs ({len(signs)}) and joint_offsets ({len(offsets)}) must match"
             raise ValueError(msg)
 
-        state = np.asarray(raw_state, dtype=np.float32)
+        self._image_keys = list(image_keys)
+        self._image_size = tuple(image_size)
+        self._num_state_tokens = num_state_tokens
+        self._setup_type = setup_type
+        self._control_mode = control_mode
+        self._add_setup_tokens = add_setup_tokens
+        self._add_control_tokens = add_control_tokens
+        self._adapt_to_so101 = adapt_to_so101
+        self._joint_signs = np.asarray(signs, dtype=np.float32)
+        self._joint_offsets = np.asarray(offsets, dtype=np.float32)
+        self._normalizer = (
+            StatsNormalizer(stats={STATE: state_stats}, mode="quantiles", features=[STATE]) if state_stats else None
+        )
+
+    @override
+    def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        outputs = dict(inputs)
+        state = outputs.get(STATE, outputs.get(f"observation.{STATE}"))
+        if state is None:
+            msg = f"MolmoAct2 requires {STATE!r} in its input"
+            raise ValueError(msg)
+        state = np.asarray(state, dtype=np.float32)
         if state.ndim == 1:
             state = state[None, :]
-        return self._normalize_state(state)
+        if self._adapt_to_so101:
+            state = _joint_transform(state, self._joint_signs, self._joint_offsets, inverse=False)
+        if self._normalizer is not None:
+            state = self._normalizer({STATE: state})[STATE]
+        state = np.clip(state, -1.0, 1.0)
+
+        images = self._extract_images(outputs, batch_size=state.shape[0])
+        tasks = self._extract_tasks(outputs, batch_size=state.shape[0])
+        outputs[IMAGES] = np.stack([self._resize_image(image) for image in images], axis=0)
+        outputs[TASK] = [
+            _robot_prompt(
+                task=tasks[index],
+                state=state[index],
+                num_state_tokens=self._num_state_tokens,
+                setup_type=self._setup_type,
+                control_mode=self._control_mode,
+                add_setup_tokens=self._add_setup_tokens,
+                add_control_tokens=self._add_control_tokens,
+                num_images=len(images),
+            )
+            for index in range(state.shape[0])
+        ]
+        outputs.pop(STATE, None)
+        outputs.pop(f"observation.{STATE}", None)
+        return outputs
+
+    def _extract_images(self, inputs: dict[str, Any], *, batch_size: int) -> list[np.ndarray]:
+        images_value = inputs.get(IMAGES)
+        images: list[np.ndarray] = []
+        if self._image_keys:
+            for name in self._image_keys:
+                flat_key = name if name.startswith(f"{IMAGES}.") else f"{IMAGES}.{name}"
+                if flat_key in inputs:
+                    images.append(np.asarray(inputs[flat_key]))
+                elif isinstance(images_value, dict) and name.removeprefix(f"{IMAGES}.") in images_value:
+                    images.append(np.asarray(images_value[name.removeprefix(f"{IMAGES}.")]))
+        elif isinstance(images_value, np.ndarray):
+            images = [images_value]
+        elif isinstance(images_value, dict):
+            images = [np.asarray(value) for key, value in images_value.items() if "is_pad" not in str(key)]
+        else:
+            keys = sorted(key for key in inputs if key.startswith(f"{IMAGES}.") and "is_pad" not in key)
+            images = [np.asarray(inputs[key]) for key in keys]
+
+        if not images:
+            msg = "MolmoAct2 requires at least one image input"
+            raise ValueError(msg)
+        for image in images:
+            if image.ndim != _IMAGE_NDIM or image.shape[1] != _NUM_CHANNELS:
+                msg = f"Expected BCHW image with 3 channels, got {image.shape}"
+                raise ValueError(msg)
+            if image.shape[0] != batch_size:
+                msg = f"Image batch size mismatch: expected {batch_size}, got {image.shape[0]}"
+                raise ValueError(msg)
+        return images
 
     @staticmethod
-    def _extract_tasks(inputs: dict[str, Any], batch_size: int) -> list[str]:
-        task_source = inputs.get(TASK)
-        if task_source is None:
-            task_source = inputs.get(f"observation.{TASK}")
-
-        if task_source is None:
-            tasks = [""] * batch_size
-        elif isinstance(task_source, str):
-            tasks = [task_source] * batch_size
-        elif isinstance(task_source, (list, tuple, np.ndarray)):
-            tasks = [str(item) for item in list(task_source)]
+    def _extract_tasks(inputs: dict[str, Any], *, batch_size: int) -> list[str]:
+        source = inputs.get(TASK, inputs.get(f"observation.{TASK}", inputs.get("observation.language")))
+        if source is None:
+            msg = f"MolmoAct2 requires {TASK!r} in its input"
+            raise ValueError(msg)
+        if isinstance(source, str):
+            tasks = [source] * batch_size
         else:
-            tasks = [str(task_source)]
-
-        if len(tasks) == 1 and batch_size > 1:
-            tasks = tasks * batch_size
+            tasks = [str(value) for value in np.asarray(source).reshape(-1).tolist()]
+            if len(tasks) == 1 and batch_size > 1:
+                tasks *= batch_size
         if len(tasks) != batch_size:
-            msg = f"Expected {batch_size} task strings, got {len(tasks)}."
+            msg = f"Expected {batch_size} task strings, got {len(tasks)}"
             raise ValueError(msg)
         return [_normalize_text(task) for task in tasks]
 
-    def _resolve_image_arrays(self, inputs: dict[str, Any]) -> list[np.ndarray]:
-        images_value = inputs.get(IMAGES)
-        if isinstance(images_value, dict):
-            if self.image_keys:
-                return [np.asarray(images_value[key]) for key in self.image_keys if key in images_value]
-            return [np.asarray(value) for value in images_value.values()]
-        if images_value is not None and not isinstance(images_value, (str, bytes)):
-            return [np.asarray(images_value)]
-
-        flat_keys: list[str] = []
-        if self.image_keys:
-            flat_keys = [f"{IMAGES}.{key}" for key in self.image_keys if f"{IMAGES}.{key}" in inputs]
-        if not flat_keys:
-            flat_keys = [key for key in inputs if str(key).startswith(f"{IMAGES}.") and "is_pad" not in str(key)]
-            flat_keys.sort()
-        return [np.asarray(inputs[key]) for key in flat_keys]
-
-    @staticmethod
-    def _as_bchw_batch(array: np.ndarray) -> np.ndarray:
-        arr = np.asarray(array)
-        if arr.ndim == 3:
-            if int(arr.shape[0]) != 3:
-                msg = f"Expected CHW image tensor with 3 channels, got shape {arr.shape}"
+    def _resize_image(self, image: np.ndarray) -> np.ndarray:
+        height, width = self._image_size
+        output: list[np.ndarray] = []
+        for sample in image:
+            if sample.dtype == np.uint8:
+                pixels = sample
+            elif np.issubdtype(sample.dtype, np.floating):
+                float_pixels = sample.astype(np.float32)
+                if float(np.max(float_pixels)) <= 1.0:
+                    float_pixels *= 255.0
+                pixels = np.clip(float_pixels, 0.0, 255.0).astype(np.uint8)
+            else:
+                msg = f"Unsupported image dtype: {sample.dtype}"
                 raise ValueError(msg)
-            arr = arr[None, ...]
-        if arr.ndim != 4:
-            msg = f"Expected BCHW image tensor, got shape {arr.shape}"
-            raise ValueError(msg)
-        if int(arr.shape[1]) != 3:
-            msg = f"Expected BCHW image tensor with 3 channels, got shape {arr.shape}"
-            raise ValueError(msg)
+            hwc = np.transpose(pixels, (1, 2, 0))
+            resized = cv2.resize(hwc, (width, height), interpolation=cv2.INTER_LINEAR_EXACT)
+            output.append(np.transpose(resized, (2, 0, 1)).astype(np.float32) / 255.0)
+        return np.stack(output, axis=0)
 
-        if arr.dtype == np.uint8:
-            arr = arr.astype(np.float32) / 255.0
-        else:
-            arr = arr.astype(np.float32)
-        return arr
 
-    def _extract_images_by_example(self, inputs: dict[str, Any], batch_size: int) -> list[list[np.ndarray]]:
-        arrays = self._resolve_image_arrays(inputs)
-        if not arrays:
-            msg = "MolmoAct2 inference preprocessor requires at least one image input."
-            raise ValueError(msg)
+class MolmoAct2ModelInputs(Preprocessor):
+    """Assemble tokenized prompts and packed images into MolmoAct2 model inputs."""
 
-        images_by_example: list[list[np.ndarray]] = [[] for _ in range(batch_size)]
-        for arr in arrays:
-            bchw = self._as_bchw_batch(arr)
-            if int(bchw.shape[0]) != batch_size:
-                msg = f"Image batch size mismatch: expected {batch_size}, got {bchw.shape[0]}"
-                raise ValueError(msg)
-            for idx in range(batch_size):
-                images_by_example[idx].append(bchw[idx])
-        return images_by_example
-
-    @staticmethod
-    def _stack_flat_images(flat_images: list[np.ndarray]) -> np.ndarray:
-        """Stack example-major ``(C, H, W)`` crops into a ``(M, C, H, W)`` batch."""
-        if not flat_images:
-            msg = "MolmoAct2 inference preprocessor requires at least one image input."
-            raise ValueError(msg)
-        return np.stack([np.asarray(image, dtype=np.float32) for image in flat_images], axis=0)
-
-    def _build_model_inputs(
+    def __init__(
         self,
-        input_ids: np.ndarray,
-        attention_mask: np.ndarray,
-        flat_images: list[np.ndarray],
-        batch_size: int,
-    ) -> dict[str, np.ndarray]:
-        """Patchify images and assemble backbone-ready model inputs.
+        *,
+        max_action_dim: int,
+        action_dim: int,
+        bos_token_id: int,
+        pad_token_id: int,
+        image_placeholder_token_id: int,
+        image_start_token_id: int,
+        image_end_token_id: int,
+        image_patch_id: int,
+        image_col_id: int | None,
+        low_res_image_start_token_id: int | None,
+        image_size: tuple[int, int] = (378, 378),
+        patch_size: int = 14,
+        pooling_size: tuple[int, int] = (2, 2),
+        image_mean: list[float] | None = None,
+        image_std: list[float] | None = None,
+        image_use_col_tokens: bool = True,
+        use_single_crop_col_tokens: bool = False,
+        use_single_crop_start_token: bool = True,
+        image_token_ids: list[int] | None = None,
+    ) -> None:
+        self._max_action_dim = max_action_dim
+        self._action_dim = action_dim
+        self._bos_token_id = bos_token_id
+        self._pad_token_id = pad_token_id
+        self._placeholder_id = image_placeholder_token_id
+        self._image_start_id = image_start_token_id
+        self._image_end_id = image_end_token_id
+        self._image_patch_id = image_patch_id
+        self._image_col_id = image_col_id
+        self._low_res_start_id = low_res_image_start_token_id or image_start_token_id
+        self._height, self._width = image_size
+        self._patch_size = patch_size
+        self._pool_h, self._pool_w = pooling_size
+        self._mean = np.asarray(image_mean or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
+        self._std = np.asarray(image_std or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
+        self._image_use_col_tokens = image_use_col_tokens
+        self._use_single_crop_col_tokens = use_single_crop_col_tokens
+        self._use_single_crop_start_token = use_single_crop_start_token
+        self._image_token_ids = np.asarray(image_token_ids or [], dtype=np.int64)
+        self._pooling, self._pooled_h, self._pooled_w = self._pooling_indices()
 
-        Returns:
-            The exact tensor set the exported model consumes: ``input_ids``,
-            ``attention_mask``, ``token_type_ids``, ``images``, ``token_pooling``
-            and ``action_dim_is_pad``.
-        """
-        assert self._input_config is not None  # noqa: S101  (validated by caller)
+    @override
+    def __call__(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+        input_ids = np.asarray(inputs[TOKENIZED_PROMPT], dtype=np.int64)
+        attention_mask = np.asarray(inputs[TOKENIZED_PROMPT_MASK], dtype=np.int64)
+        input_ids, attention_mask = self._insert_bos(input_ids, attention_mask)
 
-        image_out = self._image_patchifier(self._stack_flat_images(flat_images))
-        pixel_values = np.asarray(image_out["pixel_values"], dtype=np.float32)
-        image_token_pooling = np.asarray(image_out["image_token_pooling"], dtype=np.int64)
-        image_grids = np.asarray(image_out["image_grids"], dtype=np.int64)
-        image_num_crops = np.asarray(image_out["image_num_crops"], dtype=np.int64)
+        images = np.asarray(inputs[IMAGES], dtype=np.float32)
+        if images.ndim != _PACKED_IMAGE_NDIM:
+            msg = f"Expected packed images (N, B, C, H, W), got {images.shape}"
+            raise ValueError(msg)
+        num_images, batch_size, channels, height, width = images.shape
+        if channels != _NUM_CHANNELS or (height, width) != (self._height, self._width):
+            msg = f"Unexpected packed image shape {images.shape}"
+            raise ValueError(msg)
 
-        input_ids, attention_mask, token_type_ids = expand_image_placeholders(
-            config=self._input_config,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            image_grids=image_grids,
-        )
-        images, token_pooling = build_batched_images(
-            self._input_config,
-            input_ids,
-            pixel_values,
-            image_token_pooling,
-            image_grids,
-            image_num_crops,
-        )
-        action_dim_is_pad = default_action_dim_is_pad(self._input_config, batch_size=batch_size)
+        flat_images = images.transpose(1, 0, 2, 3, 4).reshape(batch_size * num_images, channels, height, width)
+        pixel_values = self._patchify((flat_images - self._mean) / self._std)
+        grids = np.tile(np.array([[self._pooled_h, self._pooled_w, 0, 0]], dtype=np.int64), (batch_size * num_images, 1))
+        input_ids, attention_mask = self._expand_placeholders(input_ids, attention_mask, grids)
+        token_type_ids = self._token_type_ids(input_ids, attention_mask)
+        batched_images = pixel_values.reshape(batch_size, num_images, pixel_values.shape[1], pixel_values.shape[2])
 
-        model_inputs: dict[str, np.ndarray] = {
-            "input_ids": input_ids.astype(np.int64),
-            "attention_mask": attention_mask.astype(np.int64),
-            "images": images.astype(np.float32),
+        pooling = []
+        patches_per_image = pixel_values.shape[1]
+        for image_index in range(num_images):
+            block = np.where(self._pooling >= 0, self._pooling + image_index * patches_per_image, self._pooling)
+            pooling.append(block)
+        token_pooling = np.tile(np.concatenate(pooling, axis=0)[None, ...], (batch_size, 1, 1))
+        action_dim_is_pad = np.ones((batch_size, self._max_action_dim), dtype=np.bool_)
+        action_dim_is_pad[:, : self._action_dim] = False
+
+        outputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            IMAGES: batched_images.astype(np.float32),
             "token_pooling": token_pooling.astype(np.int64),
             "action_dim_is_pad": action_dim_is_pad,
         }
         if token_type_ids is not None:
-            model_inputs["token_type_ids"] = token_type_ids.astype(np.int64)
-        return model_inputs
+            outputs["token_type_ids"] = token_type_ids
+        return outputs
 
-    def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
-        if self._input_config is None:
-            msg = "MolmoAct2Preprocessor requires model_input_config to build model inputs."
+    def _insert_bos(self, ids: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        rows: list[np.ndarray] = []
+        for row_ids, row_mask in zip(ids, mask, strict=True):
+            valid_ids = row_ids[row_mask.astype(np.bool_)]
+            if valid_ids.size == 0 or valid_ids[0] != self._bos_token_id:
+                valid_ids = np.concatenate((np.array([self._bos_token_id], dtype=ids.dtype), valid_ids))
+            rows.append(valid_ids)
+        width = max((row.size for row in rows), default=1)
+        output_ids = np.full((len(rows), width), self._pad_token_id, dtype=ids.dtype)
+        output_mask = np.zeros((len(rows), width), dtype=mask.dtype)
+        for index, row in enumerate(rows):
+            output_ids[index, : row.size] = row
+            output_mask[index, : row.size] = 1
+        return output_ids, output_mask
+
+    def _patchify(self, pixels: np.ndarray) -> np.ndarray:
+        count, channels, height, width = pixels.shape
+        patch = self._patch_size
+        if height % patch or width % patch:
+            msg = f"Image size {(height, width)} must be divisible by patch_size={patch}"
             raise ValueError(msg)
+        pixels = pixels.transpose(0, 2, 3, 1)
+        pixels = pixels.reshape(count, height // patch, patch, width // patch, patch, channels)
+        return pixels.transpose(0, 1, 3, 2, 4, 5).reshape(count, -1, patch * patch * channels)
 
-        inputs_dict = dict(inputs)
+    def _pooling_indices(self) -> tuple[np.ndarray, int, int]:
+        patch_h = self._height // self._patch_size
+        patch_w = self._width // self._patch_size
+        pooled_h = (patch_h + self._pool_h - 1) // self._pool_h
+        pooled_w = (patch_w + self._pool_w - 1) // self._pool_w
+        pad_h = pooled_h * self._pool_h - patch_h
+        pad_w = pooled_w * self._pool_w - patch_w
+        indices = np.arange(patch_h * patch_w, dtype=np.int64).reshape(patch_h, patch_w)
+        indices = np.pad(
+            indices,
+            ((pad_h // 2, (pad_h + 1) // 2), (pad_w // 2, (pad_w + 1) // 2)),
+            constant_values=-1,
+        )
+        pooling = indices.reshape(pooled_h, self._pool_h, pooled_w, self._pool_w)
+        return pooling.transpose(0, 2, 1, 3).reshape(-1, self._pool_h * self._pool_w), pooled_h, pooled_w
 
-        state = self._extract_state(inputs_dict)
-        batch_size = int(state.shape[0])
-        tasks = self._extract_tasks(inputs_dict, batch_size)
-        images_by_example = self._extract_images_by_example(inputs_dict, batch_size)
+    def _image_sequence(self, grid: np.ndarray) -> list[int]:
+        resized_h, resized_w, height, width = (int(value) for value in grid)
 
-        prompt_texts: list[str] = []
-        flat_images: list[np.ndarray] = []
-        for idx in range(batch_size):
-            flat_images.extend(images_by_example[idx])
-            discrete_state = _build_discrete_state_string(state[idx], self.num_state_tokens)
-            prompt_texts.append(
-                _build_robot_text(
-                    task=tasks[idx],
-                    discrete_state_string=discrete_state,
-                    setup_type=self.setup_type,
-                    control_mode=self.control_mode,
-                    add_setup_tokens=self.add_setup_tokens,
-                    add_control_tokens=self.add_control_tokens,
-                    num_images=len(images_by_example[idx]),
-                )
-            )
+        def rows(row_count: int, col_count: int, *, use_col: bool) -> list[int]:
+            row = [self._image_patch_id] * col_count
+            if use_col and self._image_col_id is not None:
+                row.append(self._image_col_id)
+            return row * row_count
 
-        text_inputs = self.tokenizer(prompt_texts, padding=True)
-        input_ids = np.asarray(text_inputs["input_ids"], dtype=np.int64)
-        attention_mask = np.asarray(text_inputs["attention_mask"], dtype=np.int64)
+        if height == 0 or width == 0:
+            return [
+                self._image_start_id,
+                *rows(resized_h, resized_w, use_col=self._use_single_crop_col_tokens),
+                self._image_end_id,
+            ]
+        low_start = self._low_res_start_id if self._use_single_crop_start_token else self._image_start_id
+        return [
+            low_start,
+            *rows(resized_h, resized_w, use_col=self._use_single_crop_col_tokens),
+            self._image_end_id,
+            self._image_start_id,
+            *rows(height, width, use_col=self._image_use_col_tokens),
+            self._image_end_id,
+        ]
 
-        bos_token_id = self.tokenizer.bos_token_id or self.tokenizer.eos_token_id
-        pad_token_id = self.tokenizer.pad_token_id
-        input_ids, attention_mask = self._insert_bos(input_ids, attention_mask, int(bos_token_id), int(pad_token_id))
+    def _expand_placeholders(
+        self,
+        ids: np.ndarray,
+        mask: np.ndarray,
+        grids: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        rows: list[np.ndarray] = []
+        grid_index = 0
+        for row_ids, row_mask in zip(ids, mask, strict=True):
+            expanded: list[int] = []
+            for token in row_ids[row_mask.astype(np.bool_)]:
+                if int(token) == self._placeholder_id:
+                    if grid_index >= grids.shape[0]:
+                        msg = "Not enough image grids to expand all <|image|> placeholders"
+                        raise ValueError(msg)
+                    expanded.extend(self._image_sequence(grids[grid_index]))
+                    grid_index += 1
+                else:
+                    expanded.append(int(token))
+            rows.append(np.asarray(expanded, dtype=ids.dtype))
+        if grid_index != grids.shape[0]:
+            msg = f"Image placeholders ({grid_index}) do not match images ({grids.shape[0]})"
+            raise ValueError(msg)
+        width = max((row.size for row in rows), default=1)
+        output_ids = np.full((len(rows), width), self._pad_token_id, dtype=ids.dtype)
+        output_mask = np.zeros((len(rows), width), dtype=mask.dtype)
+        for index, row in enumerate(rows):
+            output_ids[index, : row.size] = row
+            output_mask[index, : row.size] = 1
+        return output_ids, output_mask
 
-        return self._build_model_inputs(input_ids, attention_mask, flat_images, batch_size)
+    def _token_type_ids(self, ids: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
+        if self._image_token_ids.size == 0:
+            return None
+        return (np.isin(ids, self._image_token_ids) & mask.astype(np.bool_)).astype(np.int64)
+
+
+__all__ = ["MolmoAct2ModelInputs", "MolmoAct2Preprocessor"]

@@ -114,6 +114,34 @@ class TestResizePreprocessor:
         # Channels-last input is converted to channels-first output.
         assert result[IMAGES].shape == (1, 3, 64, 64)
 
+    def test_channels_last_grayscale_returns_channels_first(self) -> None:
+        # Regression: C=1 in BHWC was misidentified as channels-first, producing
+        # garbage output with H in the channel position.
+        prep = ResizePreprocessor(image_resolution=(64, 64), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 47, 32, 1).astype(np.float32)  # (B, H, W, C=1)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 1, 64, 64)
+
+    def test_channels_last_two_channel_returns_channels_first(self) -> None:
+        # Regression: C=2 in BHWC was misidentified as channels-first.
+        prep = ResizePreprocessor(image_resolution=(64, 64), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 22, 32, 2).astype(np.float32)  # (B, H, W, C=2)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 2, 64, 64)
+
+    def test_channels_last_rgba_returns_channels_first(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(32, 32), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 16, 16, 4).astype(np.float32)  # (B, H, W, C=4)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 4, 32, 32)
+
+    def test_ambiguous_layout_raises(self) -> None:
+        # Both dim-1 and dim-4 are in {1,2,3,4} — layout is indeterminate.
+        prep = ResizePreprocessor(image_resolution=(64, 64), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 3, 3, 3).astype(np.float32)  # (B, 3, 3, 3) — ambiguous
+        with pytest.raises(ValueError, match="ambiguous layout"):
+            prep({IMAGES: img})
+
     def test_channels_last_uint8_is_normalized(self) -> None:
         prep = ResizePreprocessor(image_resolution=(32, 32), mode=ResizeMode.STRETCH)
         img = np.full((1, 16, 16, 3), 255, dtype=np.uint8)
@@ -139,3 +167,16 @@ class TestResizePreprocessor:
         # quantization step (1/255 ~= 0.0039).
         mean_abs_diff = np.mean(np.abs(out_float - out_uint8))
         assert mean_abs_diff < 1.0 / 255.0
+
+    def test_zero_height_raises(self) -> None:
+        # Regression for fuzzer crash: previously raised ZeroDivisionError.
+        prep = ResizePreprocessor(image_resolution=(64, 64))
+        img = np.zeros((1, 3, 0, 64), dtype=np.float32)
+        with pytest.raises(ValueError, match="zero spatial dimension"):
+            prep({IMAGES: img})
+
+    def test_zero_width_raises(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(64, 64))
+        img = np.zeros((1, 3, 64, 0), dtype=np.float32)
+        with pytest.raises(ValueError, match="zero spatial dimension"):
+            prep({IMAGES: img})

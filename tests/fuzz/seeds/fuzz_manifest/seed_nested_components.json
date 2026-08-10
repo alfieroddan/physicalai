@@ -1,0 +1,19 @@
+{
+  "format": "policy_package",
+  "version": "1.0",
+  "policy": { "name": "deep" },
+  "model": {
+    "n_obs_steps": 1,
+    "runner": {
+      "class_path": "physicalai.inference.runners.SinglePass",
+      "init_args": {
+        "inner": {
+          "class_path": "physicalai.inference.runners.SinglePass",
+          "init_args": {}
+        }
+      }
+    },
+    "preprocessors": [],
+    "postprocessors": []
+  }
+}

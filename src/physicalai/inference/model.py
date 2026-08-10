@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
+from loguru import logger
 
+from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
@@ -38,6 +41,7 @@ def _is_safe_policy_name(name: str) -> bool:
     return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
+@export_config(class_path="physicalai.inference.InferenceModel", scalar_var_kwargs=True)
 class InferenceModel:
     """Unified inference interface for exported policies.
 
@@ -98,6 +102,9 @@ class InferenceModel:
             FileNotFoundError: If export directory or required files don't exist.
             ValueError: If ``policy_name`` contains invalid characters.
         """
+        load_started = time.monotonic()
+        logger.info("Loading policy from {}", export_dir)
+
         self.export_dir = Path(export_dir)
         if not self.export_dir.exists():
             msg = f"Export directory not found: {export_dir}"
@@ -123,9 +130,19 @@ class InferenceModel:
             device = self._detect_device()
         self.device = device
 
+        logger.info(
+            "Loaded manifest: policy={}, backend={}, device={}",
+            self.policy_name,
+            self.backend,
+            self.device,
+        )
+
         self.adapter: RuntimeAdapter = get_adapter(self.backend, device=device, **adapter_kwargs)
         model_path = self._get_model_path()
+        compile_started = time.monotonic()
+        logger.info("Compiling {} model on {}...", self.backend, self.device)
         self.adapter.load(model_path)
+        logger.info("Model compiled in {:.1f}s", time.monotonic() - compile_started)
 
         self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
 
@@ -134,6 +151,11 @@ class InferenceModel:
         )
         self.postprocessors: list[Postprocessor] = (
             postprocessors if postprocessors is not None else self._load_processors(self.manifest.model.postprocessors)
+        )
+        logger.info(
+            "Loaded {} preprocessors, {} postprocessors",
+            len(self.preprocessors),
+            len(self.postprocessors),
         )
 
         self.input_features: list[InferenceFeature] = self._load_features(self.manifest.model.input_features)
@@ -145,6 +167,12 @@ class InferenceModel:
             callback.on_load(self)
 
         self._action_buffer: deque[np.ndarray] = deque()
+
+        logger.info(
+            "InferenceModel ready (chunk_size={}, total {:.1f}s)",
+            self.chunk_size,
+            time.monotonic() - load_started,
+        )
 
     @property
     def chunk_size(self) -> int:
@@ -374,6 +402,7 @@ class InferenceModel:
         Raises:
             KeyError: If an expected adapter input is not found in the
                 (flattened) inputs.
+            ValueError: If two inputs expand to the same flattened key.
         """
         expected = self.adapter.input_names
 
@@ -382,8 +411,18 @@ class InferenceModel:
             for key, value in inputs.items():
                 if isinstance(value, dict):
                     for sub_key, sub_value in value.items():
-                        flat_inputs[f"{key}.{sub_key}"] = sub_value
+                        flat_key = f"{key}.{sub_key}"
+                        if flat_key in flat_inputs:
+                            msg = (
+                                f"Key collision in inputs: '{flat_key}' produced by"
+                                f" both a flat key and nested dict '{key}'"
+                            )
+                            raise ValueError(msg)
+                        flat_inputs[flat_key] = sub_value
                 else:
+                    if key in flat_inputs:
+                        msg = f"Key collision in inputs: '{key}' produced by both a nested expansion and a flat key"
+                        raise ValueError(msg)
                     flat_inputs[key] = value
 
             filtered: dict[str, np.ndarray] = {}

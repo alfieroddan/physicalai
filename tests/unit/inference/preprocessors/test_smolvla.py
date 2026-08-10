@@ -132,6 +132,25 @@ class TestResizeSmolVLADtypeAndLayout:
         with pytest.raises(ValueError, match="Unsupported image dtype"):
             prep({IMAGES: img})
 
+    def test_out_of_range_float_clamped_to_pixel_bounds(self) -> None:
+        # Regression: arbitrary float values previously caused output far outside [-1, 1].
+        prep = ResizeSmolVLA(image_resolution=(32, 32))
+        img = np.full((1, 3, 32, 32), -1e30, dtype=np.float32)
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+        assert float(out.min()) >= -1.0 - 1e-5
+        assert float(out.max()) <= 1.0 + 1e-5
+
+    def test_nan_float_input_clamped_to_pixel_bounds(self) -> None:
+        # Regression: NaN propagates through np.clip unchanged; nan_to_num handles it.
+        prep = ResizeSmolVLA(image_resolution=(32, 32))
+        img = np.full((1, 3, 32, 32), float("nan"), dtype=np.float32)
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+        assert not np.any(np.isnan(out))
+        assert float(out.min()) >= -1.0 - 1e-5
+        assert float(out.max()) <= 1.0 + 1e-5
+
     def test_channels_last_transposed(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64))
         # (B, H, W, C) input should be transposed to (B, C, H, W) internally
@@ -149,6 +168,21 @@ class TestResizeSmolVLADtypeAndLayout:
         result_hwc = prep({IMAGES: hwc})
         np.testing.assert_array_equal(result_chw[IMAGES], result_hwc[IMAGES])
 
+    def test_ambiguous_layout_raises(self) -> None:
+        # Both dim-1 and dim-4 are in {1,2,3,4} — layout is indeterminate.
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        img = np.random.rand(1, 3, 3, 3).astype(np.float32)
+        with pytest.raises(ValueError, match="ambiguous layout"):
+            prep({IMAGES: img})
+
+    def test_extreme_aspect_ratio_does_not_crash(self) -> None:
+        # Regression: int(cur_height / ratio) could be 0 for extreme ratios, crashing cv2.
+        prep = ResizeSmolVLA(image_resolution=(512, 512))
+        img = np.zeros((1, 3, 1, 256), dtype=np.float32)  # very thin image
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape[2] >= 1
+        assert result[IMAGES].shape[3] >= 1
+
 
 class TestResizeSmolVLAResizeWithPad:
     def test_invalid_ndim_raises(self) -> None:
@@ -165,3 +199,16 @@ class TestResizeSmolVLAResizeWithPad:
         result = ResizeSmolVLA._resize_with_pad(img, 64, 64)
         assert result.shape[2] == 64
         assert result.shape[3] == 64
+
+    def test_zero_height_raises(self) -> None:
+        # Regression for fuzzer crash: previously raised ZeroDivisionError.
+        prep = ResizeSmolVLA(image_resolution=(512, 512))
+        img = np.zeros((1, 3, 0, 64), dtype=np.float32)
+        with pytest.raises(ValueError, match="zero spatial dimension"):
+            prep({IMAGES: img})
+
+    def test_zero_width_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(512, 512))
+        img = np.zeros((1, 3, 64, 0), dtype=np.float32)
+        with pytest.raises(ValueError, match="zero spatial dimension"):
+            prep({IMAGES: img})

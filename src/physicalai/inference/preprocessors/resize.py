@@ -83,7 +83,7 @@ class ResizePreprocessor(Preprocessor):
 
         return outputs
 
-    def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0914
+    def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0912, PLR0914
         """Resize an image array to the target resolution.
 
                 Behavior depends on the configured ``mode``:
@@ -106,7 +106,8 @@ class ResizePreprocessor(Preprocessor):
         Raises:
             ValueError: If the input array does not have 4 dimensions, or if it
                 has an unsupported dtype (not ``uint8`` or floating point),
-                or if the ``pad_value`` is out of range for ``uint8`` inputs.
+                or if the ``pad_value`` is out of range for ``uint8`` inputs,
+                or if the input image has a zero spatial dimension.
         """
         img_dim = 4
         if img.ndim != img_dim:
@@ -123,12 +124,23 @@ class ResizePreprocessor(Preprocessor):
             msg = f"Unsupported image dtype: {img.dtype}"
             raise ValueError(msg)
 
-        channels_last = img.shape[-1] == 3 and img.shape[1] != 3  # noqa: PLR2004
+        # Heuristic: standard channel counts are {1, 2, 3, 4}; spatial dims are typically larger.
+        if img.shape[-1] in {1, 2, 3, 4} and img.shape[1] in {1, 2, 3, 4}:
+            msg = (
+                f"ambiguous layout: both dim 1 ({img.shape[1]}) and dim -1 ({img.shape[-1]}) "
+                "look like standard channel counts; provide input with spatial dims > 4"
+            )
+            raise ValueError(msg)
+        channels_last = img.shape[-1] in {1, 2, 3, 4} and img.shape[1] not in {1, 2, 3, 4}
         if not channels_last:
             img = np.transpose(img, (0, 2, 3, 1))  # (B, C, H, W) -> (B, H, W, C)
 
         target_height, target_width = self._image_resolution
         cur_height, cur_width = img.shape[1:3]
+
+        if cur_height == 0 or cur_width == 0:
+            msg = f"Input image has a zero spatial dimension: shape {img.shape}"
+            raise ValueError(msg)
 
         if self._mode == ResizeMode.LETTERBOX:
             ratio = max(cur_width / target_width, cur_height / target_height)

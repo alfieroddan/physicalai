@@ -168,6 +168,23 @@ class TestStatsNormalizerQuantiles:
         result_max = normalizer({"observation.state": np.array([1.9, 3.8])})
         np.testing.assert_allclose(result_max["observation.state"], np.array([1.0, 1.0]))
 
+    def test_masked_dimensions_only(self) -> None:
+        normalizer = StatsNormalizer(
+            mode="quantiles",
+            stats={
+                "state": {
+                    "q01": [-1.0, -1.0, -1.0],
+                    "q99": [1.0, 1.0, 1.0],
+                    "mask": [True, False, True],
+                },
+            },
+        )
+        inputs = {"state": np.array([[0.5, 4.0, -0.5]], dtype=np.float32)}
+
+        result = normalizer(inputs)
+
+        np.testing.assert_allclose(result["state"], [[0.5, 4.0, -0.5]])
+
 
 class TestStatsNormalizerIdentity:
     def test_identity_mode_passthrough(self, stats_dir: Path) -> None:
@@ -270,6 +287,50 @@ class TestStatsNormalizerArtifactParam:
         r = repr(normalizer)
         assert "StatsNormalizer" in r
         assert "stats.safetensors" in r
+
+
+class TestStatsNormalizerCorruptedStats:
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+    def test_mean_std_nan_std_raises(self, bad_value: float) -> None:
+        # Regression for fuzzer crash: -Inf std previously returned 0.0 silently.
+        norm = StatsNormalizer(
+            mode="mean_std",
+            features=["obs"],
+            stats={"obs": {"mean": np.array([0.0]), "std": np.array([bad_value])}},
+        )
+        with pytest.raises(ValueError, match="corrupted"):
+            norm({"obs": np.array([1.0, 2.0])})
+
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+    def test_mean_std_nan_mean_raises(self, bad_value: float) -> None:
+        norm = StatsNormalizer(
+            mode="mean_std",
+            features=["obs"],
+            stats={"obs": {"mean": np.array([bad_value]), "std": np.array([1.0])}},
+        )
+        with pytest.raises(ValueError, match="corrupted"):
+            norm({"obs": np.array([1.0, 2.0])})
+
+    @pytest.mark.parametrize("mode,stat_keys", [
+        ("min_max", {"min": np.array([0.0]), "max": np.array([float("inf")])}),
+        ("min_max", {"min": np.array([float("-inf")]), "max": np.array([1.0])}),
+        ("quantiles", {"q01": np.array([float("nan")]), "q99": np.array([1.0])}),
+        ("quantiles", {"q01": np.array([0.0]), "q99": np.array([float("nan")])}),
+    ])
+    def test_other_modes_non_finite_stats_raise(self, mode: str, stat_keys: dict) -> None:
+        norm = StatsNormalizer(mode=mode, features=["obs"], stats={"obs": stat_keys})
+        with pytest.raises(ValueError, match="corrupted"):
+            norm({"obs": np.array([0.5])})
+
+    def test_finite_stats_still_normalize_correctly(self) -> None:
+        mean, std, x = 1.0, 0.5, 1.5
+        norm = StatsNormalizer(
+            mode="mean_std",
+            features=["obs"],
+            stats={"obs": {"mean": np.array([mean]), "std": np.array([std])}},
+        )
+        result = norm({"obs": np.array([x])})
+        np.testing.assert_allclose(result["obs"], [(x - mean) / (std + _EPS)], rtol=1e-6)
 
 
 class TestParseFlatStats:

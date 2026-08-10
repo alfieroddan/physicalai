@@ -1,0 +1,185 @@
+# Fuzzing for Physical AI Runtime
+
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_s:
+        description: "Fuzzing duration per target (seconds)"
+        default: "1800"
+        required: false
+  pull_request:
+    paths:
+      - "tests/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+      - "src/**"
+
+permissions: {}
+
+jobs:
+  fuzz:
+    name: "fuzz / ${{ matrix.harness }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Manifest / component instantiation
+          - harness: manifest
+            seed_dir: tests/fuzz/seeds/fuzz_manifest
+          - harness: component
+            seed_dir: ""
+          # Array processing pipeline
+          - harness: stats_normalizer
+            seed_dir: ""
+          - harness: resize_preprocessor
+            seed_dir: ""
+          - harness: action_normalizer
+            seed_dir: ""
+          - harness: action_chunk_trimmer
+            seed_dir: ""
+          - harness: lerp_smoother
+            seed_dir: ""
+          - harness: resize_smolvla
+            seed_dir: ""
+          # Path handling, runtime, queue
+          - harness: policy_name
+            seed_dir: ""
+          - harness: detect_backend
+            seed_dir: ""
+          - harness: prepare_inputs
+            seed_dir: ""
+          - harness: action_queue
+            seed_dir: ""
+          - harness: import_dotted_path
+            seed_dir: ""
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.8.8"
+
+      - name: Install project dependencies
+        run: uv sync --frozen
+
+      # TODO: move atheris into pyproject.toml
+      - name: Install atheris
+        run: uv pip install "atheris==3.1.0"
+
+      - name: Seed corpus
+        run: |
+          mkdir -p "tests/fuzz/corpus/${{ matrix.harness }}"
+          if [ -n "${{ matrix.seed_dir }}" ] && [ -d "${{ matrix.seed_dir }}" ]; then
+            cp -rn "${{ matrix.seed_dir }}/." "tests/fuzz/corpus/${{ matrix.harness }}/" || true
+          fi
+
+      # ── Fuzzing run ───────────────────────────────────────────────────────
+      - name: Run fuzzer
+        id: run_fuzzer
+        env:
+          FUZZ_DURATION: >-
+            ${{
+              github.event_name == 'pull_request' && '30' ||
+              github.event.inputs.duration_s || '1800'
+            }}
+          # Dump the Python stack trace on crashes.
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set -o pipefail
+          uv run python "tests/fuzz/harnesses/fuzz_${{ matrix.harness }}.py" \
+            "tests/fuzz/corpus/${{ matrix.harness }}/" \
+            -max_total_time="${FUZZ_DURATION}" \
+            -max_len=65536 \
+            -timeout=30 \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1 \
+            2>&1 | tee "fuzz_output_${{ matrix.harness }}.txt"
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 360 }}
+
+      # ── Crash detection ───────────────────────────────────────────────────
+      # libFuzzer writes four artifact types to the working directory:
+      #   crash-*      uncaught exception or assert
+      #   timeout-*    single input exceeded -timeout
+      #   oom-*        process exceeded -rss_limit_mb
+      #   slow-unit-*  input exceeded report_slow_units threshold
+      - name: Detect crashes
+        if: always()
+        id: crash_check
+        run: |
+          mapfile -t crashes < <(find . -maxdepth 1 \
+            \( -name 'crash-*' -o -name 'timeout-*' \
+               -o -name 'oom-*' -o -name 'slow-unit-*' \) \
+            -print)
+          if [ ${#crashes[@]} -gt 0 ]; then
+            echo "crashes_found=true" >> "$GITHUB_OUTPUT"
+            printf '::error::Crash artifacts found for %s:\n' "${{ matrix.harness }}"
+            printf '  %s\n' "${crashes[@]}"
+          else
+            echo "crashes_found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Artifact uploads ──────────────────────────────────────────────────
+      # Clean run       → zero artifacts.
+      # libFuzzer crash → crash artifact (reproducing inputs + log).
+      # Startup failure → diagnostic log (fuzzer exited non-zero, no crash files written;
+      #                   happens for import errors, NameError at module level, etc.).
+      - name: Upload crash artifacts
+        if: ${{ always() && steps.crash_check.outputs.crashes_found == 'true' }}
+        id: upload_crashes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crashes-${{ matrix.harness }}-${{ github.run_id }}
+          path: |
+            crash-*
+            timeout-*
+            oom-*
+            slow-unit-*
+            fuzz_output_${{ matrix.harness }}.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload diagnostic log
+        if: >-
+          ${{    
+            always() &&
+            steps.crash_check.outputs.crashes_found != 'true' &&
+            steps.run_fuzzer.conclusion == 'failure'
+          }}
+        id: upload_log_diagnostic
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: log-${{ matrix.harness }}-${{ github.run_id }}
+          path: fuzz_output_${{ matrix.harness }}.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ── Fail the job ──────────────────────────────────────────────────────
+      - name: Fail on crashes or startup failure
+        if: ${{ always() && (steps.run_fuzzer.conclusion == 'failure' || steps.crash_check.outputs.crashes_found == 'true') }}
+        env:
+          CRASHES_FOUND: ${{ steps.crash_check.outputs.crashes_found }}
+          HARNESS: ${{ matrix.harness }}
+        run: |
+          if [ "$CRASHES_FOUND" == "true" ]; then
+            echo "::error::Crashes detected in ${HARNESS} — see crash artifacts"
+          else
+            echo "::error::Fuzzer exited non-zero without crash files in ${HARNESS} — startup failure, see diagnostic log"
+          fi
+          exit 1

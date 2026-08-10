@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 from typing_extensions import override
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+from loguru import logger
 
 from physicalai.inference.adapters import RuntimeAdapter
 from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec
@@ -151,6 +153,23 @@ class TestInferenceModelInit:
         assert model.policy_name == "act"
         assert model.backend == "openvino"
         assert isinstance(model.runner, SinglePass)
+
+    def test_init_logs_load_phases(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        messages: list[str] = []
+        handler_id = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+
+        try:
+            InferenceModel(export_dir)
+        finally:
+            logger.remove(handler_id)
+
+        joined = "\n".join(messages)
+        assert "Loading policy from" in joined
+        assert "Loaded manifest:" in joined
+        assert "Compiling openvino model on" in joined
+        assert "Model compiled in" in joined
+        assert "InferenceModel ready" in joined
 
     def test_init_with_nonexistent_directory(self) -> None:
         with pytest.raises(FileNotFoundError, match="Export directory not found"):
@@ -401,6 +420,34 @@ class TestInputPreparation:
         }
         result = model._prepare_inputs(inputs)
         assert set(result.keys()) == {"state", "images.top"}
+
+
+class TestPrepareInputsCollision:
+    def _call(self, inputs: dict, expected_keys: list[str]) -> dict:
+        mock = types.SimpleNamespace()
+        mock.adapter = types.SimpleNamespace(input_names=expected_keys)
+        return InferenceModel._prepare_inputs(mock, inputs)  # type: ignore[arg-type]
+
+    def test_flat_key_accepted(self) -> None:
+        arr = np.zeros((1,))
+        result = self._call({"obs.image": arr}, ["obs.image"])
+        assert result["obs.image"] is arr
+
+    def test_nested_key_accepted(self) -> None:
+        arr = np.zeros((1,))
+        result = self._call({"obs": {"image": arr}}, ["obs.image"])
+        assert result["obs.image"] is arr
+
+    def test_flat_and_nested_collision_raises(self) -> None:
+        # Regression: previously silently returned different tensors depending on insertion order.
+        arr_a, arr_b = np.zeros((2,)), np.ones((3,))
+        with pytest.raises(ValueError, match="collision"):
+            self._call({"obs.image": arr_a, "obs": {"image": arr_b}}, ["obs.image"])
+
+    def test_collision_detected_regardless_of_insertion_order(self) -> None:
+        arr_a, arr_b = np.zeros((2,)), np.ones((3,))
+        with pytest.raises(ValueError, match="collision"):
+            self._call({"obs": {"image": arr_b}, "obs.image": arr_a}, ["obs.image"])
 
 
 @pytest.mark.usefixtures("_patch_adapter")

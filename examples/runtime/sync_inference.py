@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import argparse
 import signal
+from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
+from physicalai.config import Config, save_yaml
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     ChunkedActionQueue,
@@ -65,6 +67,15 @@ def main() -> None:
     robot_group.add_argument("--ip", help="Robot IP (widowxai)")
     robot_group.add_argument("--ip-left", help="Left arm IP (bimanual_widowxai)")
     robot_group.add_argument("--ip-right", help="Right arm IP (bimanual_widowxai)")
+    robot_group.add_argument(
+        "--shared-robot",
+        action="store_true",
+        help="Wrap the driver in SharedRobot (Zenoh transport)",
+    )
+    robot_group.add_argument(
+        "--robot-name",
+        help="Logical SharedRobot name (required with --shared-robot)",
+    )
 
     # Model
     model_group = parser.add_argument_group("model")
@@ -74,7 +85,10 @@ def main() -> None:
     # Cameras
     cam_group = parser.add_argument_group("cameras")
     cam_group.add_argument(
-        "--camera", action="append", dest="cameras", metavar="NAME:DRIVER:DEVICE",
+        "--camera",
+        action="append",
+        dest="cameras",
+        metavar="NAME:DRIVER:DEVICE",
         help="Camera as name:driver:device_id (repeatable). Omit for interactive selection.",
     )
     cam_group.add_argument("--cam-width", type=int, default=640, help="Camera width (default: 640)")
@@ -86,7 +100,22 @@ def main() -> None:
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
     rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
-    rt_group.add_argument("--request-threshold", type=float, default=0.5, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
+    rt_group.add_argument(
+        "--shared-camera",
+        action="store_true",
+        help="Use SharedCamera (iceoryx2 transport) — faster but incompatible with debugger",
+    )
+    rt_group.add_argument(
+        "--request-threshold",
+        type=float,
+        default=0.5,
+        help="Request new inference when queue drops below this fraction of chunk_size (default: 0.5)",
+    )
+    rt_group.add_argument(
+        "--export-config",
+        type=Path,
+        help="Save the constructed runtime as YAML and exit before connecting hardware.",
+    )
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -97,16 +126,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Load model ──
-    print(f"Loading model from {args.model} on {args.device}...", flush=True)
     model = InferenceModel(args.model, device=args.device)
-    print("Model loaded.")
 
-    # ── Build robot & cameras (direct, no shared memory — debugger-safe) ──
+    # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
-        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=False)
+        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
     else:
-        cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
+        cameras = select_cameras_interactive(
+            args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera,
+        )
 
     # ── Callbacks ──
     callbacks: list = []
@@ -136,14 +165,21 @@ def main() -> None:
         callbacks=callbacks,
     )
 
+    if args.export_config:
+        save_yaml(Config.from_instance(runtime), args.export_config)
+        print(f"Saved runtime config to {args.export_config}")
+        return
+
     with runtime:
         print(f"Running SYNC at {args.fps} fps for {args.duration_s}s...")
         if args.task:
             print(f"  task: {args.task!r}")
         print("  (inference blocks the loop — expect pauses)")
         steps = runtime.run(duration_s=args.duration_s)
-        print(f"\nDone — {steps} steps, {execution.inference_count} inferences, "
-              f"{policy_source.action_queue.total_holds} holds")
+        print(
+            f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+            f"{policy_source.action_queue.total_holds} holds"
+        )
         prompt_torque_disable(robot)
 
 
