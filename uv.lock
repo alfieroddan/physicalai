@@ -1777,7 +1777,7 @@ requires-dist = [
     { name = "msgpack", marker = "extra == 'transport'", specifier = "==1.2.1" },
     { name = "mypy", marker = "extra == 'tests'" },
     { name = "num2words", specifier = ">=0.5.14,<0.6.0" },
-    { name = "numpy", specifier = ">=1.24" },
+    { name = "numpy" },
     { name = "onnxruntime" },
     { name = "opencv-python-headless" },
     { name = "opencv-python-headless", marker = "extra == 'basler'" },

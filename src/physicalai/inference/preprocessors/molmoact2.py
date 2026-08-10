@@ -340,7 +340,7 @@ class MolmoAct2ModelInputs(Preprocessor):
             if valid_ids.size == 0 or valid_ids[0] != self._bos_token_id:
                 valid_ids = np.concatenate((np.array([self._bos_token_id], dtype=ids.dtype), valid_ids))
             rows.append(valid_ids)
-        width = max((row.size for row in rows), default=1)
+        width = ids.shape[1] + 1
         output_ids = np.full((len(rows), width), self._pad_token_id, dtype=ids.dtype)
         output_mask = np.zeros((len(rows), width), dtype=mask.dtype)
         for index, row in enumerate(rows):
@@ -406,10 +406,12 @@ class MolmoAct2ModelInputs(Preprocessor):
         grids: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         rows: list[np.ndarray] = []
+        expanded_widths: list[int] = []
         grid_index = 0
         for row_ids, row_mask in zip(ids, mask, strict=True):
+            valid = row_mask.astype(np.bool_)
             expanded: list[int] = []
-            for token in row_ids[row_mask.astype(np.bool_)]:
+            for token in row_ids[valid]:
                 if int(token) == self._placeholder_id:
                     if grid_index >= grids.shape[0]:
                         msg = "Not enough image grids to expand all <|image|> placeholders"
@@ -419,10 +421,11 @@ class MolmoAct2ModelInputs(Preprocessor):
                 else:
                     expanded.append(int(token))
             rows.append(np.asarray(expanded, dtype=ids.dtype))
+            expanded_widths.append(len(expanded) + int((~valid).sum()))
         if grid_index != grids.shape[0]:
             msg = f"Image placeholders ({grid_index}) do not match images ({grids.shape[0]})"
             raise ValueError(msg)
-        width = max((row.size for row in rows), default=1)
+        width = max(expanded_widths, default=1)
         output_ids = np.full((len(rows), width), self._pad_token_id, dtype=ids.dtype)
         output_mask = np.zeros((len(rows), width), dtype=mask.dtype)
         for index, row in enumerate(rows):
