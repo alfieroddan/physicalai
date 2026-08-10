@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime import ChunkedActionQueue as ActionQueue, ChunkedActionQueue, PolicySource, RobotRuntime, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -631,3 +634,469 @@ class TestPolicySourceModelInput:
 
         assert model_input[TASK] == ["pick the cube"]
 
+
+@dataclass
+class _LifecycleRecorder:
+    """Captures lifecycle events and bus close, for shutdown assertions."""
+
+    events: list[str] = field(default_factory=list)
+    metadata: list[dict[str, Any]] = field(default_factory=list)
+    closed: bool = False
+
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        self.events.append(event.event)
+        self.metadata.append(event.metadata)
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def shutdown_metadata(self) -> dict[str, Any]:
+        return next(m for e, m in zip(self.events, self.metadata, strict=True) if e == "shutdown")
+
+
+@dataclass
+class _InterruptOnceOnShutdown:
+    """Raises ``KeyboardInterrupt`` from ``on_lifecycle``, once, on shutdown."""
+
+    fired: bool = False
+
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        if event.event == "shutdown" and not self.fired:
+            self.fired = True
+            raise KeyboardInterrupt
+
+
+@dataclass
+class _StopBeforeSend:
+    """Requests a stop from ``on_action_ready``, i.e. before the tick's send.
+
+    Stopping here makes the "in-flight action is still sent" guarantee
+    falsifiable: bailing out between the check and the send would drop it.
+    """
+
+    step: int
+    runtime: RobotRuntime | None = None
+
+    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:
+        if step >= self.step:
+            assert self.runtime is not None
+            self.runtime.stop()
+        return action
+
+
+@dataclass
+class _RaisingActionSource:
+    """Action source whose ``update()`` raises, to drive the exit paths."""
+
+    exc: BaseException
+    connect_exc: BaseException | None = None
+    disconnect_exc: BaseException | None = None
+
+    def connect(self, *, bus: Any, session_id: str) -> None:
+        if self.connect_exc is not None:
+            raise self.connect_exc
+
+    def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray:
+        raise self.exc
+
+    def disconnect(self) -> None:
+        if self.disconnect_exc is not None:
+            raise self.disconnect_exc
+
+
+class _CountdownStopSignal:
+    """Stop signal that trips after *polls* checks; implements only ``is_set()``."""
+
+    def __init__(self, polls: int) -> None:
+        self.polls = polls
+        self.calls = 0
+
+    def is_set(self) -> bool:
+        self.calls += 1
+        return self.calls > self.polls
+
+
+@contextmanager
+def _frozen_time() -> Iterator[MagicMock]:
+    """Patch ``core.time`` so ticks are instantaneous and deterministic."""
+    with patch("physicalai.runtime.core.time") as mock_time:
+        mock_time.perf_counter.return_value = 0.0
+        mock_time.time.return_value = 0.0
+        mock_time.sleep = MagicMock()
+        yield mock_time
+
+
+def _stop_runtime(**kwargs: Any) -> tuple[RobotRuntime, MagicMock]:
+    """Build a connected runtime, defaulting to a trivial action source."""
+    robot = kwargs.pop("robot", None) or _make_mock_robot()
+    source = kwargs.pop("action_source", None) or FakeActionSource(next_action=np.zeros(3, dtype=np.float32))
+    fps = kwargs.pop("fps", 10.0)
+    runtime = RobotRuntime(robot=robot, action_source=source, fps=fps, **kwargs)
+    runtime._connected = True  # noqa: SLF001
+    return runtime, robot
+
+
+class TestCooperativeStop:
+    """``stop()`` / ``stop_event`` — the cooperative exit path."""
+
+    def test_stop_mid_run_still_sends_the_in_flight_action(self) -> None:
+        stopper = _StopBeforeSend(step=2)
+        runtime, robot = _stop_runtime(callbacks=[stopper])
+        stopper.runtime = runtime
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert steps == 3
+        assert robot.send_action.call_count == 3  # step 2's send still happened
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_stop_before_run_is_remembered_then_cleared(self) -> None:
+        """One path end to end: the loop's stop check at step 0.
+
+        A ``stop()`` arriving before ``run()`` is remembered, repeating it
+        changes nothing, and it wins over an equally-satisfied ``duration_s``.
+        The next ``run()`` is unaffected.
+        """
+        runtime, robot = _stop_runtime()
+
+        runtime.stop()
+        runtime.stop()
+        assert runtime.last_run_reason is None
+
+        with _frozen_time():
+            stopped = runtime.run(duration_s=0.0)  # both exits satisfied
+            assert stopped == 0
+            assert type(stopped) is int  # noqa: E721 — not np.int64
+            robot.send_action.assert_not_called()
+            assert runtime.last_run_reason == "stop_requested"
+
+            resumed = runtime.run(duration_s=0.3)
+
+        assert resumed == 3
+        assert robot.send_action.call_count == 3
+        assert runtime.last_run_reason == "duration_elapsed"
+
+    @pytest.mark.parametrize("make_event", [threading.Event, mp.Event], ids=["threading", "multiprocessing"])
+    def test_external_stop_event(self, make_event: Callable[[], Any]) -> None:
+        """Factory, not instance, so no mp semaphore is created at collection."""
+        runtime, robot = _stop_runtime()
+        stop_event = make_event()
+        stop_event.set()
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0, stop_event=stop_event)
+
+        assert steps == 0
+        robot.send_action.assert_not_called()
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_duck_typed_stop_signal_needs_only_is_set(self) -> None:
+        runtime, robot = _stop_runtime()
+        signal = _CountdownStopSignal(polls=3)
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0, stop_event=signal)
+
+        assert steps == 3
+        assert robot.send_action.call_count == 3
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_stop_signal_is_not_runtime_checkable(self) -> None:
+        """The runtime does no isinstance anywhere; the protocol must not invite it."""
+        with pytest.raises(TypeError):
+            isinstance(threading.Event(), StopSignal)  # type: ignore[misc]  # noqa: S101
+
+    def test_stop_from_another_thread_ends_a_live_loop(self) -> None:
+        """The headline claim, against a real loop and real time."""
+        first_tick = threading.Event()
+
+        class _Signal:
+            def on_action_sent(self, *, action: np.ndarray, step: int) -> None:  # noqa: ARG002
+                first_tick.set()
+
+        runtime, _robot = _stop_runtime(fps=50.0, callbacks=[_Signal()])
+
+        def stopper() -> None:
+            first_tick.wait(timeout=5.0)
+            runtime.stop()
+
+        thread = threading.Thread(target=stopper)
+        thread.start()
+        try:
+            steps = runtime.run(duration_s=30.0)
+        finally:
+            thread.join(timeout=5.0)
+
+        assert runtime.last_run_reason == "stop_requested"
+        assert 1 <= steps < 500  # ended on the stop, far short of duration_s
+
+
+class TestStopFlagLifecycle:
+    """The stop flag must never survive a run, however that run ended."""
+
+    def test_action_source_connect_failure_does_not_poison_runtime(self) -> None:
+        source = _RaisingActionSource(exc=RuntimeError("unused"), connect_exc=RuntimeError("model load failed"))
+        recorder = _LifecycleRecorder()
+        runtime, robot = _stop_runtime(action_source=source, callbacks=[recorder])
+
+        runtime.stop()
+        with _frozen_time(), pytest.raises(RuntimeError, match="model load failed"):
+            runtime.run(duration_s=1.0)
+
+        assert runtime.last_run_reason == "error"
+        assert recorder.shutdown_metadata["reason"] == "error"
+        assert recorder.closed
+
+        runtime._action_source = FakeActionSource(next_action=np.zeros(3, dtype=np.float32))  # noqa: SLF001
+        with _frozen_time():
+            assert runtime.run(duration_s=0.3) == 3
+        assert robot.send_action.call_count == 3
+
+    @pytest.mark.parametrize("raise_from", ["disconnect", "on_lifecycle"], ids=["disconnect", "on_lifecycle"])
+    def test_base_exception_during_teardown_still_completes_shutdown(self, raise_from: str) -> None:
+        """A Ctrl+C mid-teardown must not skip the event, the flush, or the clear.
+
+        The bus isolates ``Exception`` but lets ``BaseException`` through, so
+        each teardown step needs its own ``finally``.
+        """
+        recorder = _LifecycleRecorder()
+        callbacks: list[Any] = [recorder]
+        source: Any = FakeActionSource(next_action=np.zeros(3, dtype=np.float32))
+        if raise_from == "disconnect":
+            source = _RaisingActionSource(exc=RuntimeError("unused"), disconnect_exc=KeyboardInterrupt())
+        else:
+            callbacks.append(_InterruptOnceOnShutdown())
+
+        runtime, robot = _stop_runtime(action_source=source, callbacks=callbacks)
+        runtime.stop()
+
+        with _frozen_time(), pytest.raises(KeyboardInterrupt):
+            runtime.run(duration_s=1.0)
+
+        assert recorder.shutdown_metadata["reason"] == "stop_requested"
+        assert recorder.closed
+        assert runtime.last_run_reason == "stop_requested"
+
+        # The flag did not survive into the next session.
+        runtime._action_source = FakeActionSource(next_action=np.zeros(3, dtype=np.float32))  # noqa: SLF001
+        with _frozen_time():
+            assert runtime.run(duration_s=0.3) == 3
+        assert robot.send_action.call_count == 3
+
+    def test_not_connected_run_leaves_previous_reason_untouched(self) -> None:
+        runtime, _robot = _stop_runtime()
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+        assert runtime.last_run_reason == "duration_elapsed"
+
+        runtime._connected = False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="connect"):
+            runtime.run(duration_s=0.1)
+
+        assert runtime.last_run_reason == "duration_elapsed"
+
+    def test_stop_during_teardown_does_not_leak_into_next_run(self) -> None:
+        """Why the flag clears at the *end* of shutdown: clearing it first would
+        let a stop arriving mid-teardown zero-step the following session.
+        """
+
+        class _StopOnDisconnect:
+            runtime: RobotRuntime | None = None
+
+            def connect(self, *, bus: Any, session_id: str) -> None: ...
+
+            def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray:
+                return np.zeros(3, dtype=np.float32)
+
+            def disconnect(self) -> None:
+                assert self.runtime is not None
+                self.runtime.stop()
+
+        source = _StopOnDisconnect()
+        runtime, _robot = _stop_runtime(action_source=source)
+        source.runtime = runtime
+
+        with _frozen_time():
+            assert runtime.run(duration_s=0.2) == 2
+            assert runtime.run(duration_s=0.3) == 3
+
+        assert runtime.last_run_reason == "duration_elapsed"
+
+
+def _fake_source() -> FakeActionSource:
+    return FakeActionSource(next_action=np.zeros(3, dtype=np.float32))
+
+
+class TestRunReason:
+    """All four exit reasons, on both the property and the shutdown event."""
+
+    @pytest.mark.parametrize(
+        ("make_source", "stop_first", "expected"),
+        [
+            (_fake_source, False, "duration_elapsed"),
+            (_fake_source, True, "stop_requested"),
+            (lambda: _RaisingActionSource(exc=KeyboardInterrupt()), False, "interrupted"),
+        ],
+        ids=["duration_elapsed", "stop_requested", "interrupted"],
+    )
+    def test_reason_on_normal_return(self, make_source: Callable[[], Any], stop_first: bool, expected: str) -> None:
+        recorder = _LifecycleRecorder()
+        runtime, _robot = _stop_runtime(action_source=make_source(), callbacks=[recorder])
+        if stop_first:
+            runtime.stop()
+
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+
+        assert runtime.last_run_reason == expected
+        assert recorder.shutdown_metadata["reason"] == expected
+
+    @pytest.mark.parametrize(
+        ("via", "exc_type", "message"),
+        [
+            ("source", ConnectionError, "link down"),
+            ("source", WorkerDiedError, "dead"),
+            ("callback", RuntimeError, "filter blew up"),
+        ],
+        ids=["source_connection_error", "source_worker_died", "callback_raises"],
+    )
+    def test_error_reason_on_propagating_exception(
+        self,
+        via: str,
+        exc_type: type[Exception],
+        message: str,
+    ) -> None:
+        """A crashed run is not mislabelled as a normal exit."""
+        recorder = _LifecycleRecorder()
+        callbacks: list[Any] = [recorder]
+        source: Any = _fake_source()
+        if via == "source":
+            source = _RaisingActionSource(exc=exc_type(message))
+        else:
+            bad = MagicMock()
+            bad.on_action_ready.side_effect = exc_type(message)
+            callbacks.append(bad)
+
+        runtime, _robot = _stop_runtime(action_source=source, callbacks=callbacks)
+
+        with _frozen_time(), pytest.raises(exc_type, match=message):
+            runtime.run(duration_s=100.0)
+
+        assert runtime.last_run_reason == "error"
+        assert recorder.shutdown_metadata["reason"] == "error"
+
+    def test_reason_is_none_while_run_in_flight(self) -> None:
+        seen: list[Any] = []
+
+        class _ReasonProbe:
+            def on_action_sent(self, *, action: np.ndarray, step: int) -> None:  # noqa: ARG002
+                seen.append(runtime.last_run_reason)
+
+        runtime, _robot = _stop_runtime(callbacks=[_ReasonProbe()])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+            assert runtime.last_run_reason == "duration_elapsed"
+            runtime.run(duration_s=0.1)
+
+        assert seen == [None, None]  # never the prior run's reason
+
+
+class TestStopEventNotInConfigSchema:
+    def test_from_config_rejects_stop_event_as_unknown_option(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Asserts the *reason* for rejection, which is what the skip controls.
+
+        Without ``skip={"stop_event"}`` the key is a known option and fails type
+        validation instead, so asserting on bare ``SystemExit`` covers nothing.
+        """
+        cfg_path = tmp_path / "runtime.yaml"
+        cfg_path.write_text(_minimal_yaml() + "run:\n  stop_event: something\n")
+
+        with pytest.raises(SystemExit):
+            RobotRuntime.from_config(cfg_path)
+
+        assert "does not accept option 'stop_event'" in capsys.readouterr().err
+
+
+class TestPolicySourceRerun:
+    """A runtime carrying a real ``PolicySource`` must survive being run twice."""
+
+    @staticmethod
+    def _model(chunk_rows: int = 5, action_dim: int = 3) -> MagicMock:
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda _obs: np.zeros((chunk_rows, action_dim), dtype=np.float32)
+        return model
+
+    def test_queue_counters_describe_one_run_not_all_runs(self) -> None:
+        """``connect()`` calls ``reset()``, so the counters are per-session.
+
+        The reference docs point callers at ``action_queue.total_pops`` for run
+        stats, and ``_reset_session()`` zeroes its own counters each run — the
+        queue has to agree.
+        """
+        source = PolicySource(model=self._model(), execution=SyncExecution())
+        runtime, robot = _stop_runtime(action_source=source)
+
+        with _frozen_time():
+            first = runtime.run(duration_s=0.5)
+            assert source.action_queue.total_pops == first
+
+            second = runtime.run(duration_s=0.5)
+
+        assert first == second == 5
+        assert robot.send_action.call_count == 10
+        assert source.action_queue.total_pops == second  # not first + second
+
+    def test_previous_queue_contents_are_never_replayed(self) -> None:
+        """A stopped run leaves unsent actions behind; they must be dropped.
+
+        They were computed from observations that are now stale, so ``connect()``
+        discards them instead of resuming mid-chunk.
+        """
+        tag = {"value": 1.0}
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda _obs: np.full((8, 3), tag["value"], dtype=np.float32)
+        source = PolicySource(model=model, execution=SyncExecution())
+        runtime, robot = _stop_runtime(action_source=source)
+
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+        assert source.action_queue.remaining > 0
+
+        tag["value"] = 2.0
+        robot.send_action.reset_mock()
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+
+        sent = [float(call[0][0][0]) for call in robot.send_action.call_args_list]
+        assert sent
+        assert all(value == 2.0 for value in sent), f"run 1 actions replayed: {sent}"
+
+    def test_rerun_with_async_execution_keeps_inferring(self) -> None:
+        """The second run must be driven by fresh inference, not a frozen action.
+
+        Regression guard for two faults that made a re-run *look* fine:
+        ``PolicySource`` skipping warmup on an emptied queue, and
+        ``AsyncExecution`` spawning a worker that saw a stale stop flag and
+        exited. Together: a full-length run with zero inference.
+
+        Real time, since the point is that a background thread runs.
+        """
+        execution = AsyncExecution()
+        source = PolicySource(model=self._model(chunk_rows=5), execution=execution)
+        runtime, _robot = _stop_runtime(action_source=source, fps=50.0)
+
+        steps_first = runtime.run(duration_s=0.6)
+        steps_second = runtime.run(duration_s=0.6)
+
+        assert steps_first == steps_second == 30
+        # Both counters restart each run, so read them directly.
+        assert execution.inference_count >= 2, "no background inference in the second run"
+        holds = source.action_queue.total_holds
+        assert holds < steps_second // 3, f"queue starved: {holds} holds"
