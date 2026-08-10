@@ -7,7 +7,6 @@ Preprocessors transform observation dicts before the adapter bridge
 flattens and filters them for the runtime adapter.
 """
 
-from physicalai.inference.preprocessors.asset_tokenizer import AssetTokenizer
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.preprocessors.hf_tokenizer import HFTokenizer
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
@@ -21,7 +20,6 @@ from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
 from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
 
 __all__ = [
-    "AssetTokenizer",
     "HFTokenizer",
     "LambdaPreprocessor",
     "MolmoAct2ModelInputs",
