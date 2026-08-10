@@ -34,9 +34,7 @@ def _resize_image(image: np.ndarray, desired_output_size: list[int]) -> np.ndarr
 def _select_tiling(h: int, w: int, patch_size: int, max_num_crops: int) -> np.ndarray:
     tilings: list[tuple[int, int]] = []
     for i in range(1, max_num_crops + 1):
-        for j in range(1, max_num_crops + 1):
-            if i * j <= max_num_crops:
-                tilings.append((i, j))
+        tilings.extend((i, j) for j in range(1, max_num_crops + 1) if i * j <= max_num_crops)
     tilings.sort(key=lambda x: (x[0] * x[1], x[0]))
     candidate_tilings = np.asarray(tilings, dtype=np.int32)
     candidate_resolutions = candidate_tilings * patch_size
@@ -231,7 +229,7 @@ def _to_hwc_uint8(images_bchw: np.ndarray) -> list[np.ndarray]:
         img = image
         if np.issubdtype(img.dtype, np.floating):
             if float(np.max(img)) <= 1.0:
-                img = img * 255.0
+                img *= 255.0
             img = np.clip(img, 0.0, 255.0).astype(np.uint8)
         elif img.dtype != np.uint8:
             img = np.clip(img, 0, 255).astype(np.uint8)
@@ -294,7 +292,9 @@ class MolmoAct2ImageProcessor:
 
         pixel_values = np.concatenate(patch_batches, axis=0) if patch_batches else np.zeros((0, 0, 0), dtype=np.float32)
         image_token_pooling = (
-            np.concatenate(pooling_batches, axis=0) if pooling_batches else np.zeros((0, pool_h * pool_w), dtype=np.int64)
+            np.concatenate(pooling_batches, axis=0)
+            if pooling_batches
+            else np.zeros((0, pool_h * pool_w), dtype=np.int64)
         )
         image_grids = np.concatenate(grids, axis=0) if grids else np.zeros((0, 4), dtype=np.int64)
         image_num_crops_arr = np.asarray(image_num_crops, dtype=np.int64)

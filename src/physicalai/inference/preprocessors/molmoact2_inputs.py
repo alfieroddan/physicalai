@@ -72,28 +72,26 @@ def _image_token_ids_for_grid(config: MolmoAct2InputConfig, grid: np.ndarray) ->
 
     image_use_col_tokens = bool(config.image_use_col_tokens)
     use_single_crop_col_tokens = (
-        image_use_col_tokens
-        if config.use_single_crop_col_tokens is None
-        else bool(config.use_single_crop_col_tokens)
+        image_use_col_tokens if config.use_single_crop_col_tokens is None else bool(config.use_single_crop_col_tokens)
     )
     use_single_crop_start_token = bool(config.use_single_crop_start_token)
 
     def make_rows(num_rows: int, num_cols: int, *, use_col: bool) -> list[int]:
         row = [image_patch_id] * num_cols
         if use_col and image_col_id is not None:
-            row = row + [image_col_id]
+            row += [image_col_id]
         return row * num_rows
 
     if height == 0 or width == 0:
-        return (
-            [image_start_token_id]
-            + make_rows(resized_h, resized_w, use_col=use_single_crop_col_tokens)
-            + [image_end_token_id]
-        )
+        return [
+            image_start_token_id,
+            *make_rows(resized_h, resized_w, use_col=use_single_crop_col_tokens),
+            image_end_token_id,
+        ]
 
-    high_res = [image_start_token_id] + make_rows(height, width, use_col=image_use_col_tokens) + [image_end_token_id]
+    high_res = [image_start_token_id, *make_rows(height, width, use_col=image_use_col_tokens), image_end_token_id]
     low_start = low_res_start_id if use_single_crop_start_token else image_start_token_id
-    low_res = [low_start] + make_rows(resized_h, resized_w, use_col=use_single_crop_col_tokens) + [image_end_token_id]
+    low_res = [low_start, *make_rows(resized_h, resized_w, use_col=use_single_crop_col_tokens), image_end_token_id]
     return low_res + high_res
 
 

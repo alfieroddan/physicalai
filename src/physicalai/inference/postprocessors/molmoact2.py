@@ -53,9 +53,7 @@ class MolmoAct2Postprocessor(Postprocessor):
         if self._adapt_to_so101:
             count = min(self._joint_signs.size, action.shape[-1])
             transformed = np.array(action, copy=True)
-            transformed[..., :count] = self._joint_signs[:count] * (
-                action[..., :count] - self._joint_offsets[:count]
-            )
+            transformed[..., :count] = self._joint_signs[:count] * (action[..., :count] - self._joint_offsets[:count])
             action = transformed
         result.pop("actions", None)
         result[ACTION] = action

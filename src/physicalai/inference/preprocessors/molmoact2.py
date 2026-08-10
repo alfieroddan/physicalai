@@ -44,7 +44,9 @@ def _joint_transform(
     count = min(signs.size, values.shape[-1])
     output = np.array(values, copy=True)
     joints = values[..., :count]
-    output[..., :count] = signs[:count] * (joints - offsets[:count]) if inverse else signs[:count] * joints + offsets[:count]
+    output[..., :count] = (
+        signs[:count] * (joints - offsets[:count]) if inverse else signs[:count] * joints + offsets[:count]
+    )
     return output
 
 
@@ -308,7 +310,9 @@ class MolmoAct2ModelInputs(Preprocessor):
 
         flat_images = images.transpose(1, 0, 2, 3, 4).reshape(batch_size * num_images, channels, height, width)
         pixel_values = self._patchify((flat_images - self._mean) / self._std)
-        grids = np.tile(np.array([[self._pooled_h, self._pooled_w, 0, 0]], dtype=np.int64), (batch_size * num_images, 1))
+        grids = np.tile(
+            np.array([[self._pooled_h, self._pooled_w, 0, 0]], dtype=np.int64), (batch_size * num_images, 1)
+        )
         input_ids, attention_mask = self._expand_placeholders(input_ids, attention_mask, grids)
         token_type_ids = self._token_type_ids(input_ids, attention_mask)
         batched_images = pixel_values.reshape(batch_size, num_images, pixel_values.shape[1], pixel_values.shape[2])
