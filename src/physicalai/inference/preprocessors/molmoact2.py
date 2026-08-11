@@ -442,4 +442,5 @@ class MolmoAct2ModelInputs(Preprocessor):
             return None
         return (np.isin(ids, self._image_token_ids) & mask.astype(np.bool_)).astype(np.int64)
 
+
 __all__ = ["MolmoAct2ModelInputs", "MolmoAct2Preprocessor"]
