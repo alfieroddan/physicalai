@@ -34,7 +34,7 @@ repos:
         name: pyrefly (type checking)
         entry: pyrefly check
         language: python
-        additional_dependencies: [pyrefly==0.57.1]
+        additional_dependencies: [pyrefly==1.2.0]
         pass_filenames: false
         types: [python]
 
