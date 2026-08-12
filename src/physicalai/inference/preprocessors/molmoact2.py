@@ -40,7 +40,11 @@ def _joint_transform(
     *,
     inverse: bool,
 ) -> np.ndarray:
-    """Apply the MolmoAct2 joint-frame transform to leading dimensions."""
+    """Apply the MolmoAct2 joint-frame transform to leading dimensions.
+
+    Returns:
+        A copy of ``values`` transformed between model and robot joint frames.
+    """
     count = min(signs.size, values.shape[-1])
     output = np.array(values, copy=True)
     joints = values[..., :count]
@@ -120,6 +124,25 @@ class MolmoAct2Preprocessor(Preprocessor):
         joint_signs: list[float] | None = None,
         joint_offsets: list[float] | None = None,
     ) -> None:
+        """Initialize prompt and image preprocessing.
+
+        Args:
+            image_keys: Ordered camera keys to read from each observation.
+            state_stats: Quantile statistics used to normalize robot state.
+            image_size: Output image height and width.
+            num_state_tokens: Number of discrete tokens available per state dimension.
+            setup_type: Robot setup text included in the prompt.
+            control_mode: Robot control mode included in the prompt.
+            add_setup_tokens: Whether to wrap the setup text in special tokens.
+            add_control_tokens: Whether to wrap the control text in special tokens.
+            adapt_to_so101: Whether to transform state from the SO-101 joint frame.
+            joint_signs: Per-joint signs used by the SO-101 transform.
+            joint_offsets: Per-joint offsets used by the SO-101 transform.
+
+        Raises:
+            ValueError: If ``num_state_tokens`` is not positive or the joint transform
+                lists have different lengths.
+        """
         if num_state_tokens <= 0:
             msg = f"num_state_tokens must be > 0, got {num_state_tokens}"
             raise ValueError(msg)
@@ -272,6 +295,29 @@ class MolmoAct2ModelInputs(Preprocessor):
         use_single_crop_start_token: bool = True,
         image_token_ids: list[int] | None = None,
     ) -> None:
+        """Initialize MolmoAct2 model-input assembly.
+
+        Args:
+            max_action_dim: Width of the padded action dimension mask.
+            action_dim: Number of action dimensions used by the environment.
+            bos_token_id: Beginning-of-sequence token identifier.
+            pad_token_id: Padding token identifier.
+            image_placeholder_token_id: Prompt token replaced by an image sequence.
+            image_start_token_id: Image sequence start token identifier.
+            image_end_token_id: Image sequence end token identifier.
+            image_patch_id: Image patch token identifier.
+            image_col_id: Optional image column separator token identifier.
+            low_res_image_start_token_id: Optional low-resolution image start token.
+            image_size: Input image height and width.
+            patch_size: Height and width of each square image patch.
+            pooling_size: Height and width of each patch-pooling window.
+            image_mean: Per-channel image normalization means.
+            image_std: Per-channel image normalization standard deviations.
+            image_use_col_tokens: Whether high-resolution rows use column tokens.
+            use_single_crop_col_tokens: Whether single-crop rows use column tokens.
+            use_single_crop_start_token: Whether single crops use their configured start token.
+            image_token_ids: Token identifiers marked as image content.
+        """
         self._max_action_dim = max_action_dim
         self._action_dim = action_dim
         self._bos_token_id = bos_token_id

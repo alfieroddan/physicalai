@@ -26,6 +26,17 @@ class MolmoAct2Postprocessor(Postprocessor):
         joint_signs: list[float] | None = None,
         joint_offsets: list[float] | None = None,
     ) -> None:
+        """Initialize the MolmoAct2 postprocessor.
+
+        Args:
+            action_stats: Quantile statistics used to denormalize actions.
+            adapt_to_so101: Whether to transform actions to the SO-101 joint frame.
+            joint_signs: Per-joint signs used by the SO-101 transform.
+            joint_offsets: Per-joint offsets used by the SO-101 transform.
+
+        Raises:
+            ValueError: If ``joint_signs`` and ``joint_offsets`` have different lengths.
+        """
         signs = joint_signs or []
         offsets = joint_offsets or []
         if len(signs) != len(offsets):

@@ -114,7 +114,20 @@ def expand_image_placeholders(
     attention_mask: np.ndarray,
     image_grids: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """Replace each ``<|image|>`` placeholder with its expanded image token ids."""
+    """Replace each ``<|image|>`` placeholder with its expanded image token ids.
+
+    Args:
+        config: Token identifiers and image layout configuration.
+        input_ids: Padded prompt token identifiers.
+        attention_mask: Mask identifying valid prompt tokens.
+        image_grids: Image grid dimensions in placeholder order.
+
+    Returns:
+        Expanded token identifiers, attention mask, and optional token type identifiers.
+
+    Raises:
+        ValueError: If there are fewer image grids than image placeholders.
+    """
     if int(image_grids.shape[0]) == 0:
         return input_ids, attention_mask, _build_token_type_ids(config, input_ids, attention_mask)
 
@@ -169,6 +182,9 @@ def build_batched_images(
     Returns:
         ``(images, token_pooling)`` of shapes ``(N, max_crops, n_patches, pixels)``
         and ``(N, max_pooled, pool_area)``.
+
+    Raises:
+        ValueError: If image-end token and image-grid counts differ.
     """
     counts = (input_ids == int(config.image_end_token_id)).sum(1)  # images per example
     num_images = int(image_grids.shape[0])
@@ -231,7 +247,11 @@ def build_batched_images(
 
 
 def default_action_dim_is_pad(config: MolmoAct2InputConfig, *, batch_size: int) -> np.ndarray:
-    """Mark action dimensions beyond the environment action dim as padding."""
+    """Mark action dimensions beyond the environment action dim as padding.
+
+    Returns:
+        A boolean mask with padding dimensions marked true.
+    """
     action_dim_is_pad = np.ones((batch_size, int(config.max_action_dim)), dtype=bool)
     if int(config.env_action_dim) > 0:
         action_dim_is_pad[:, : int(config.env_action_dim)] = False

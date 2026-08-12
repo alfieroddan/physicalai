@@ -10,6 +10,7 @@ from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT
 from physicalai.inference.manifest import ComponentSpec
 from physicalai.inference.component_factory import instantiate_component
 from physicalai.inference.preprocessors import MolmoAct2ModelInputs, MolmoAct2Preprocessor
+from physicalai.inference.postprocessors import MolmoAct2Postprocessor
 
 
 def _prepare(**kwargs) -> MolmoAct2Preprocessor:
@@ -161,13 +162,18 @@ class TestMolmoAct2ManifestPipeline:
             "task": ["pick up the block"],
             "images.top": np.zeros((1, 3, 28, 28), dtype=np.uint8),
         }
-        processors = [instantiate_component(spec) for spec in specs]
-        for processor in processors:
-            values = processor(values)
+        preprocessor = instantiate_component(specs[0])
+        assert isinstance(preprocessor, MolmoAct2Preprocessor)
+        values = preprocessor(values)
 
-        assert isinstance(processors[0], MolmoAct2Preprocessor)
-        assert isinstance(processors[1], HFTokenizer)
-        assert isinstance(processors[2], MolmoAct2ModelInputs)
+        tokenizer = instantiate_component(specs[1])
+        assert isinstance(tokenizer, HFTokenizer)
+        values = tokenizer(values)
+
+        model_inputs = instantiate_component(specs[2])
+        assert isinstance(model_inputs, MolmoAct2ModelInputs)
+        values = model_inputs(values)
+
         assert set(values) == {"input_ids", "attention_mask", "images", "token_pooling", "action_dim_is_pad", "token_type_ids"}
         assert values["images"].shape == (1, 1, 4, 588)
         assert values["action_dim_is_pad"].tolist() == [[False, False, True, True]]
@@ -178,5 +184,6 @@ class TestMolmoAct2ManifestPipeline:
                 action_stats={"q01": [0.0, 0.0], "q99": [2.0, 2.0]},
             ),
         )
+        assert isinstance(postprocessor, MolmoAct2Postprocessor)
         result = postprocessor({"action": np.array([[[0.0, 1.0]]], dtype=np.float32)})
         np.testing.assert_allclose(result["action"], np.array([[[1.0, 2.0]]], dtype=np.float32))
