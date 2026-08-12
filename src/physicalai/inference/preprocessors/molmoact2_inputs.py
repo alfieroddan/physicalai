@@ -38,6 +38,7 @@ class MolmoAct2InputConfig:
     _image_token_ids: list[int] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Collect the configured image token identifiers."""
         ids = [
             self.image_patch_id,
             self.image_col_id,
@@ -52,12 +53,20 @@ class MolmoAct2InputConfig:
 
     @property
     def image_token_ids(self) -> list[int]:
-        """Token ids that mark image content (for token type ids)."""
+        """Token ids that mark image content (for token type ids).
+
+        Returns:
+            Configured image token identifiers.
+        """
         return self._image_token_ids
 
 
 def _image_token_ids_for_grid(config: MolmoAct2InputConfig, grid: np.ndarray) -> list[int]:
-    """Expand a single image grid into its sequence of image token ids."""
+    """Expand a single image grid into its sequence of image token ids.
+
+    Returns:
+        Ordered image token identifiers for the grid.
+    """
     resized_h, resized_w, height, width = (int(x) for x in np.asarray(grid).reshape(-1)[:4].tolist())
 
     image_patch_id = int(config.image_patch_id)
@@ -98,7 +107,11 @@ def _image_token_ids_for_grid(config: MolmoAct2InputConfig, grid: np.ndarray) ->
 def _build_token_type_ids(
     config: MolmoAct2InputConfig, input_ids: np.ndarray, attention_mask: np.ndarray
 ) -> np.ndarray | None:
-    """Mark image tokens (1) vs. text tokens (0), respecting the attention mask."""
+    """Mark image tokens (1) vs. text tokens (0), respecting the attention mask.
+
+    Returns:
+        Image-token indicators, or ``None`` when no image tokens are configured.
+    """
     image_token_ids = config.image_token_ids
     if not image_token_ids:
         return None
@@ -165,6 +178,85 @@ def expand_image_placeholders(
     return out_ids, out_mask, _build_token_type_ids(config, out_ids, out_mask)
 
 
+@dataclass(frozen=True)
+class _BatchLayout:
+    counts: np.ndarray
+    num_examples: int
+    n_patches: int
+    pixels_per_patch: int
+    pooled_per_image: np.ndarray
+    crops_per_example: np.ndarray
+    pooled_per_example: np.ndarray
+    patches_per_image: np.ndarray
+
+
+def _batch_layout(
+    counts: np.ndarray,
+    pixel_values: np.ndarray,
+    image_grids: np.ndarray,
+    image_num_crops: np.ndarray,
+) -> _BatchLayout:
+    num_examples = counts.shape[0]
+    _, n_patches, pixels_per_patch = pixel_values.shape
+    grids = np.asarray(image_grids)
+    pooled_per_image = (grids[:, 0] * grids[:, 1] + grids[:, 2] * grids[:, 3]).astype(np.int64)
+    example_for_image = np.repeat(np.arange(num_examples), counts)
+    crops_per_example = np.zeros(num_examples, dtype=np.int64)
+    np.add.at(crops_per_example, example_for_image, image_num_crops.astype(np.int64))
+    pooled_per_example = np.zeros(num_examples, dtype=np.int64)
+    np.add.at(pooled_per_example, example_for_image, pooled_per_image)
+    return _BatchLayout(
+        counts=counts,
+        num_examples=num_examples,
+        n_patches=n_patches,
+        pixels_per_patch=pixels_per_patch,
+        pooled_per_image=pooled_per_image,
+        crops_per_example=crops_per_example,
+        pooled_per_example=pooled_per_example,
+        patches_per_image=image_num_crops.astype(np.int64) * n_patches,
+    )
+
+
+def _allocate_batched_outputs(
+    layout: _BatchLayout, pixel_values: np.ndarray, image_token_pooling: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    max_crops = int(layout.crops_per_example.max()) if layout.num_examples > 0 else 0
+    images = np.full(
+        (layout.num_examples, max_crops, layout.n_patches, layout.pixels_per_patch),
+        -1.0,
+        dtype=pixel_values.dtype,
+    )
+    max_pooled = int(layout.pooled_per_example.max()) if layout.num_examples > 0 else 0
+    token_pooling = np.full(
+        (layout.num_examples, max_pooled, image_token_pooling.shape[-1]),
+        -1,
+        dtype=image_token_pooling.dtype,
+    )
+    return images, token_pooling
+
+
+def _offset_example_pooling(
+    layout: _BatchLayout,
+    image_token_pooling: np.ndarray,
+    *,
+    example_idx: int,
+    image_offset: int,
+    pooled_offset: int,
+) -> np.ndarray:
+    example_pooling = image_token_pooling[
+        pooled_offset : pooled_offset + int(layout.pooled_per_example[example_idx])
+    ].copy()
+    patch_offset = 0
+    row = 0
+    for local_image in range(int(layout.counts[example_idx])):
+        num_pooled = int(layout.pooled_per_image[image_offset + local_image])
+        block = example_pooling[row : row + num_pooled]
+        example_pooling[row : row + num_pooled] = np.where(block >= 0, block + patch_offset, block)
+        patch_offset += int(layout.patches_per_image[image_offset + local_image])
+        row += num_pooled
+    return example_pooling
+
+
 def build_batched_images(
     config: MolmoAct2InputConfig,
     input_ids: np.ndarray,
@@ -186,61 +278,34 @@ def build_batched_images(
     Raises:
         ValueError: If image-end token and image-grid counts differ.
     """
-    counts = (input_ids == int(config.image_end_token_id)).sum(1)  # images per example
+    counts = (input_ids == int(config.image_end_token_id)).sum(1)
     num_images = int(image_grids.shape[0])
     if int(counts.sum()) != num_images:
         msg = f"image_end tokens ({int(counts.sum())}) do not match image grids ({num_images})."
         raise ValueError(msg)
 
-    num_examples = counts.shape[0]
-    n_crops, n_patches, pixels_per_patch = pixel_values.shape
-    del n_crops
-
-    grids = np.asarray(image_grids)
-    pooled_per_image = (grids[:, 0] * grids[:, 1] + grids[:, 2] * grids[:, 3]).astype(np.int64)
-    example_for_image = np.repeat(np.arange(num_examples), counts)
-    crops_per_example = np.zeros(num_examples, dtype=np.int64)
-    np.add.at(crops_per_example, example_for_image, image_num_crops.astype(np.int64))
-    pooled_per_example = np.zeros(num_examples, dtype=np.int64)
-    np.add.at(pooled_per_example, example_for_image, pooled_per_image)
-    patches_per_image = image_num_crops.astype(np.int64) * n_patches
-
-    max_crops = int(crops_per_example.max()) if num_examples > 0 else 0
-    images = np.full(
-        (num_examples, max_crops, n_patches, pixels_per_patch),
-        -1.0,
-        dtype=pixel_values.dtype,
-    )
-    max_pooled = int(pooled_per_example.max()) if num_examples > 0 else 0
-    token_pooling = np.full(
-        (num_examples, max_pooled, image_token_pooling.shape[-1]),
-        -1,
-        dtype=image_token_pooling.dtype,
-    )
+    layout = _batch_layout(counts, pixel_values, image_grids, image_num_crops)
+    images, token_pooling = _allocate_batched_outputs(layout, pixel_values, image_token_pooling)
 
     crop_offset = 0
     pooled_offset = 0
     image_offset = 0
-    for example_idx in range(num_examples):
-        num_example_images = int(counts[example_idx])
-        num_example_crops = int(crops_per_example[example_idx])
+    for example_idx in range(layout.num_examples):
+        num_example_images = int(layout.counts[example_idx])
+        num_example_crops = int(layout.crops_per_example[example_idx])
         images[example_idx, :num_example_crops] = pixel_values[crop_offset : crop_offset + num_example_crops]
 
-        example_pooling = image_token_pooling[
-            pooled_offset : pooled_offset + int(pooled_per_example[example_idx])
-        ].copy()
-        patch_offset = 0
-        row = 0
-        for local_image in range(num_example_images):
-            num_pooled = int(pooled_per_image[image_offset + local_image])
-            block = example_pooling[row : row + num_pooled]
-            example_pooling[row : row + num_pooled] = np.where(block >= 0, block + patch_offset, block)
-            patch_offset += int(patches_per_image[image_offset + local_image])
-            row += num_pooled
+        example_pooling = _offset_example_pooling(
+            layout,
+            image_token_pooling,
+            example_idx=example_idx,
+            image_offset=image_offset,
+            pooled_offset=pooled_offset,
+        )
         token_pooling[example_idx, : example_pooling.shape[0]] = example_pooling
 
         crop_offset += num_example_crops
-        pooled_offset += int(pooled_per_example[example_idx])
+        pooled_offset += int(layout.pooled_per_example[example_idx])
         image_offset += num_example_images
 
     return images, token_pooling

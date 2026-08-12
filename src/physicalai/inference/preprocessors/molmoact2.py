@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import cv2
@@ -269,74 +270,73 @@ class MolmoAct2Preprocessor(Preprocessor):
         return np.stack(output, axis=0)
 
 
+@dataclass(eq=False, repr=False, kw_only=True)
 class MolmoAct2ModelInputs(Preprocessor):
-    """Assemble tokenized prompts and packed images into MolmoAct2 model inputs."""
+    """Assemble tokenized prompts and packed images into MolmoAct2 model inputs.
 
-    def __init__(
-        self,
-        *,
-        max_action_dim: int,
-        action_dim: int,
-        bos_token_id: int,
-        pad_token_id: int,
-        image_placeholder_token_id: int,
-        image_start_token_id: int,
-        image_end_token_id: int,
-        image_patch_id: int,
-        image_col_id: int | None,
-        low_res_image_start_token_id: int | None,
-        image_size: tuple[int, int] = (378, 378),
-        patch_size: int = 14,
-        pooling_size: tuple[int, int] = (2, 2),
-        image_mean: list[float] | None = None,
-        image_std: list[float] | None = None,
-        image_use_col_tokens: bool = True,
-        use_single_crop_col_tokens: bool = False,
-        use_single_crop_start_token: bool = True,
-        image_token_ids: list[int] | None = None,
-    ) -> None:
-        """Initialize MolmoAct2 model-input assembly.
+    Args:
+        max_action_dim: Width of the padded action dimension mask.
+        action_dim: Number of action dimensions used by the environment.
+        bos_token_id: Beginning-of-sequence token identifier.
+        pad_token_id: Padding token identifier.
+        image_placeholder_token_id: Prompt token replaced by an image sequence.
+        image_start_token_id: Image sequence start token identifier.
+        image_end_token_id: Image sequence end token identifier.
+        image_patch_id: Image patch token identifier.
+        image_col_id: Optional image column separator token identifier.
+        low_res_image_start_token_id: Optional low-resolution image start token.
+        image_size: Input image height and width.
+        patch_size: Height and width of each square image patch.
+        pooling_size: Height and width of each patch-pooling window.
+        image_mean: Per-channel image normalization means.
+        image_std: Per-channel image normalization standard deviations.
+        image_use_col_tokens: Whether high-resolution rows use column tokens.
+        use_single_crop_col_tokens: Whether single-crop rows use column tokens.
+        use_single_crop_start_token: Whether single crops use their configured start token.
+        image_token_ids: Token identifiers marked as image content.
+    """
 
-        Args:
-            max_action_dim: Width of the padded action dimension mask.
-            action_dim: Number of action dimensions used by the environment.
-            bos_token_id: Beginning-of-sequence token identifier.
-            pad_token_id: Padding token identifier.
-            image_placeholder_token_id: Prompt token replaced by an image sequence.
-            image_start_token_id: Image sequence start token identifier.
-            image_end_token_id: Image sequence end token identifier.
-            image_patch_id: Image patch token identifier.
-            image_col_id: Optional image column separator token identifier.
-            low_res_image_start_token_id: Optional low-resolution image start token.
-            image_size: Input image height and width.
-            patch_size: Height and width of each square image patch.
-            pooling_size: Height and width of each patch-pooling window.
-            image_mean: Per-channel image normalization means.
-            image_std: Per-channel image normalization standard deviations.
-            image_use_col_tokens: Whether high-resolution rows use column tokens.
-            use_single_crop_col_tokens: Whether single-crop rows use column tokens.
-            use_single_crop_start_token: Whether single crops use their configured start token.
-            image_token_ids: Token identifiers marked as image content.
-        """
-        self._max_action_dim = max_action_dim
-        self._action_dim = action_dim
-        self._bos_token_id = bos_token_id
-        self._pad_token_id = pad_token_id
-        self._placeholder_id = image_placeholder_token_id
-        self._image_start_id = image_start_token_id
-        self._image_end_id = image_end_token_id
-        self._image_patch_id = image_patch_id
-        self._image_col_id = image_col_id
-        self._low_res_start_id = low_res_image_start_token_id or image_start_token_id
-        self._height, self._width = image_size
-        self._patch_size = patch_size
-        self._pool_h, self._pool_w = pooling_size
-        self._mean = np.asarray(image_mean or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
-        self._std = np.asarray(image_std or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
-        self._image_use_col_tokens = image_use_col_tokens
-        self._use_single_crop_col_tokens = use_single_crop_col_tokens
-        self._use_single_crop_start_token = use_single_crop_start_token
-        self._image_token_ids = np.asarray(image_token_ids or [], dtype=np.int64)
+    max_action_dim: int
+    action_dim: int
+    bos_token_id: int
+    pad_token_id: int
+    image_placeholder_token_id: int
+    image_start_token_id: int
+    image_end_token_id: int
+    image_patch_id: int
+    image_col_id: int | None
+    low_res_image_start_token_id: int | None
+    image_size: tuple[int, int] = (378, 378)
+    patch_size: int = 14
+    pooling_size: tuple[int, int] = (2, 2)
+    image_mean: list[float] | None = None
+    image_std: list[float] | None = None
+    image_use_col_tokens: bool = True
+    use_single_crop_col_tokens: bool = False
+    use_single_crop_start_token: bool = True
+    image_token_ids: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        """Initialize private model-input assembly state."""
+        self._max_action_dim = self.max_action_dim
+        self._action_dim = self.action_dim
+        self._bos_token_id = self.bos_token_id
+        self._pad_token_id = self.pad_token_id
+        self._placeholder_id = self.image_placeholder_token_id
+        self._image_start_id = self.image_start_token_id
+        self._image_end_id = self.image_end_token_id
+        self._image_patch_id = self.image_patch_id
+        self._image_col_id = self.image_col_id
+        self._low_res_start_id = self.low_res_image_start_token_id or self.image_start_token_id
+        self._height, self._width = self.image_size
+        self._patch_size = self.patch_size
+        self._pool_h, self._pool_w = self.pooling_size
+        self._mean = np.asarray(self.image_mean or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
+        self._std = np.asarray(self.image_std or [0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 3, 1, 1)
+        self._image_use_col_tokens = self.image_use_col_tokens
+        self._use_single_crop_col_tokens = self.use_single_crop_col_tokens
+        self._use_single_crop_start_token = self.use_single_crop_start_token
+        self._image_token_ids = np.asarray(self.image_token_ids or [], dtype=np.int64)
         self._pooling, self._pooled_h, self._pooled_w = self._pooling_indices()
 
     @override
@@ -345,6 +345,26 @@ class MolmoAct2ModelInputs(Preprocessor):
         attention_mask = np.asarray(inputs[TOKENIZED_PROMPT_MASK], dtype=np.int64)
         input_ids, attention_mask = self._insert_bos(input_ids, attention_mask)
 
+        pixel_values, grids, num_images, batch_size = self._prepare_images(inputs)
+        input_ids, attention_mask = self._expand_placeholders(input_ids, attention_mask, grids)
+        token_type_ids = self._token_type_ids(input_ids, attention_mask)
+        batched_images = pixel_values.reshape(batch_size, num_images, pixel_values.shape[1], pixel_values.shape[2])
+        token_pooling = self._build_token_pooling(pixel_values, num_images=num_images, batch_size=batch_size)
+        action_dim_is_pad = np.ones((batch_size, self._max_action_dim), dtype=np.bool_)
+        action_dim_is_pad[:, : self._action_dim] = False
+
+        outputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            IMAGES: batched_images.astype(np.float32),
+            "token_pooling": token_pooling.astype(np.int64),
+            "action_dim_is_pad": action_dim_is_pad,
+        }
+        if token_type_ids is not None:
+            outputs["token_type_ids"] = token_type_ids
+        return outputs
+
+    def _prepare_images(self, inputs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, int, int]:
         images = np.asarray(inputs[IMAGES], dtype=np.float32)
         if images.ndim != _PACKED_IMAGE_NDIM:
             msg = f"Expected packed images (N, B, C, H, W), got {images.shape}"
@@ -359,29 +379,15 @@ class MolmoAct2ModelInputs(Preprocessor):
         grids = np.tile(
             np.array([[self._pooled_h, self._pooled_w, 0, 0]], dtype=np.int64), (batch_size * num_images, 1)
         )
-        input_ids, attention_mask = self._expand_placeholders(input_ids, attention_mask, grids)
-        token_type_ids = self._token_type_ids(input_ids, attention_mask)
-        batched_images = pixel_values.reshape(batch_size, num_images, pixel_values.shape[1], pixel_values.shape[2])
+        return pixel_values, grids, num_images, batch_size
 
+    def _build_token_pooling(self, pixel_values: np.ndarray, *, num_images: int, batch_size: int) -> np.ndarray:
         pooling = []
         patches_per_image = pixel_values.shape[1]
         for image_index in range(num_images):
             block = np.where(self._pooling >= 0, self._pooling + image_index * patches_per_image, self._pooling)
             pooling.append(block)
-        token_pooling = np.tile(np.concatenate(pooling, axis=0)[None, ...], (batch_size, 1, 1))
-        action_dim_is_pad = np.ones((batch_size, self._max_action_dim), dtype=np.bool_)
-        action_dim_is_pad[:, : self._action_dim] = False
-
-        outputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            IMAGES: batched_images.astype(np.float32),
-            "token_pooling": token_pooling.astype(np.int64),
-            "action_dim_is_pad": action_dim_is_pad,
-        }
-        if token_type_ids is not None:
-            outputs["token_type_ids"] = token_type_ids
-        return outputs
+        return np.tile(np.concatenate(pooling, axis=0)[None, ...], (batch_size, 1, 1))
 
     def _insert_bos(self, ids: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         rows: list[np.ndarray] = []
