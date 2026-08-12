@@ -25,15 +25,73 @@ class ResizeSmolVLA(Preprocessor):
             as (height, width). Defaults to (512, 512).
     """
 
-    def __init__(self, image_resolution: tuple[int, int] = (512, 512)) -> None:
+    def __init__(
+        self,
+        image_resolution: tuple[int, int] = (512, 512),
+        image_key_reorder_map: dict[str, int] | None = None,
+        num_cameras: int = 0,
+    ) -> None:
         """Initialize the SmolVLA numpy-based preprocessor.
 
         Args:
             image_resolution (tuple[int, int]): The target resolution for input images
                 as (height, width). Defaults to (512, 512).
+            image_key_reorder_map (dict[str, int] | None): Maps input image key to camera
+                slot index for reordering. Exported by physical-ai-studio when the policy
+                uses a specific camera layout. ``None`` means preserve natural input order.
+            num_cameras (int): Total number of camera slots. When > 0, the resolved image
+                list has exactly this length, with ``None`` for unoccupied slots.
         """
         super().__init__()
         self.image_resolution = image_resolution
+        # Normalise to bare keys so both "wrist" and "images.wrist" map entries match flat runtime keys.
+        self._image_key_reorder_map: dict[str, int] | None = (
+            {self._bare_key(k): v for k, v in image_key_reorder_map.items()} if image_key_reorder_map else None
+        )
+        self._num_cameras = num_cameras
+
+    @staticmethod
+    def _bare_key(key: str) -> str:
+        """Strip the ``images.`` prefix so bare and prefixed keys match the same slot.
+
+        Returns:
+            Key with ``images.`` prefix removed, or the original key unchanged.
+        """
+        return key.removeprefix(f"{IMAGES}.")
+
+    def _resolve_image_order(self, img_keys: list[str]) -> list[str | None]:
+        """Return keys sorted by camera slot; None slots filled when num_cameras > 0.
+
+        Raises:
+            ValueError: If a key is absent from the map, a slot index is out of range,
+                ``num_cameras`` is smaller than the number of provided keys, or two keys
+                map to the same slot.
+        """
+        bare_keys = [self._bare_key(k) for k in img_keys]
+        slot_by_key = self._image_key_reorder_map or {k: i for i, k in enumerate(bare_keys)}
+        missing = [img_keys[i] for i, k in enumerate(bare_keys) if k not in slot_by_key]
+        if missing:
+            msg = f"Missing slot mapping for image keys: {missing}"
+            raise ValueError(msg)
+        if self._num_cameras > 0:
+            if self._num_cameras < len(img_keys):
+                msg = f"num_cameras ({self._num_cameras}) is smaller than provided image count ({len(img_keys)})"
+                raise ValueError(msg)
+            layout: list[str | None] = [None] * self._num_cameras
+            for orig_key, bare_key in zip(img_keys, bare_keys, strict=False):
+                slot = int(slot_by_key[bare_key])
+                if slot < 0 or slot >= self._num_cameras:
+                    msg = (
+                        f"Camera slot index {slot} for key {orig_key!r} "
+                        f"is out of range for num_cameras={self._num_cameras}"
+                    )
+                    raise ValueError(msg)
+                if layout[slot] is not None:
+                    msg = f"Duplicate camera slot index {slot} for keys {layout[slot]!r} and {orig_key!r}"
+                    raise ValueError(msg)
+                layout[slot] = orig_key
+            return layout
+        return sorted(img_keys, key=lambda k: slot_by_key[self._bare_key(k)])
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Process and prepare images for model inference.
@@ -62,15 +120,28 @@ class ResizeSmolVLA(Preprocessor):
         if IMAGES in inputs and isinstance(inputs[IMAGES], np.ndarray):
             images = [inputs[IMAGES]]
         elif IMAGES in inputs and isinstance(inputs[IMAGES], dict):
-            images = list(inputs[IMAGES].values())
+            img_keys = list(inputs[IMAGES].keys())
+            ordered = self._resolve_image_order(img_keys)
+            images = [inputs[IMAGES][k] if k is not None else None for k in ordered]
         else:
             img_keys = [key for key in inputs if key.startswith(IMAGES)]
-            images = [inputs[img_keys[0]]] if len(img_keys) == 1 else [inputs[key] for key in img_keys]
+            if len(img_keys) == 1:
+                images = [inputs[img_keys[0]]]
+            else:
+                ordered = self._resolve_image_order(img_keys)
+                images = [inputs[k] if k is not None else None for k in ordered]
 
         img_masks = []
         resized_images = []
 
         for img in images:
+            if img is None:
+                # empty camera slot — filled with black image and zero mask
+                bsize = next((int(a.shape[0]) for a in images if a is not None), 1)
+                h, w = self.image_resolution
+                resized_images.append(np.full((bsize, 3, h, w), -1.0, dtype=np.float32))
+                img_masks.append(np.zeros(bsize, dtype=np.bool_))
+                continue
             if img.dtype == np.uint8:
                 img_fp32 = img.astype(np.float32) / 255.0
             elif np.issubdtype(img.dtype, np.floating):
@@ -90,10 +161,12 @@ class ResizeSmolVLA(Preprocessor):
             if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] not in {1, 2, 3, 4}:  # noqa: PLR2004
                 img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
 
-            resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
+            resized_img = self._resize_with_pad(
+                img_fp32, self.image_resolution[1], self.image_resolution[0], pad_value=0
+            )
             resized_img = resized_img * 2.0 - 1.0
             bsize = resized_img.shape[0]
-            mask = np.ones(bsize, dtype=np.bool)
+            mask = np.ones(bsize, dtype=np.bool_)
             resized_images.append(resized_img)
             img_masks.append(mask)
 
