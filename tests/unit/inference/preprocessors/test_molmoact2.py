@@ -67,6 +67,17 @@ class TestMolmoAct2Preprocessor:
         assert "The task is to pick up." in result[TASK][0]
         assert "<state_0><state_3>" in result[TASK][0]
 
+    def test_accepts_batched_channels_last_camera_frames(self) -> None:
+        observation = _observation(image_count=2)
+        observation[f"{IMAGES}.top"] = np.zeros((1, 28, 28, 3), dtype=np.uint8)
+        observation[f"{IMAGES}.wrist"] = np.full((1, 28, 28, 3), 255, dtype=np.uint8)
+
+        result = _prepare()(observation)
+
+        assert result[IMAGES].shape == (2, 1, 3, 28, 28)
+        assert float(result[IMAGES][0].max()) == 0.0
+        assert float(result[IMAGES][1].min()) == 1.0
+
     def test_applies_masked_normalization_and_joint_transform(self) -> None:
         processor = MolmoAct2Preprocessor(
             image_keys=[],

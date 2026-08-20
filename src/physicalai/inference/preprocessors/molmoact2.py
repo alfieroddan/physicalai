@@ -224,14 +224,23 @@ class MolmoAct2Preprocessor(Preprocessor):
         if not images:
             msg = "MolmoAct2 requires at least one image input"
             raise ValueError(msg)
+        normalized_images: list[np.ndarray] = []
         for image in images:
-            if image.ndim != _IMAGE_NDIM or image.shape[1] != _NUM_CHANNELS:
-                msg = f"Expected BCHW image with 3 channels, got {image.shape}"
+            if image.ndim != _IMAGE_NDIM:
+                msg = f"Expected BCHW or BHWC image with 3 channels, got {image.shape}"
+                raise ValueError(msg)
+            if image.shape[1] == _NUM_CHANNELS:
+                normalized_image = image
+            elif image.shape[-1] == _NUM_CHANNELS:
+                normalized_image = np.transpose(image, (0, 3, 1, 2))
+            else:
+                msg = f"Expected BCHW or BHWC image with 3 channels, got {image.shape}"
                 raise ValueError(msg)
             if image.shape[0] != batch_size:
                 msg = f"Image batch size mismatch: expected {batch_size}, got {image.shape[0]}"
                 raise ValueError(msg)
-        return images
+            normalized_images.append(normalized_image)
+        return normalized_images
 
     @staticmethod
     def _extract_tasks(inputs: dict[str, Any], *, batch_size: int) -> list[str]:
