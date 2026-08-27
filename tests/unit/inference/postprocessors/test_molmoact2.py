@@ -35,6 +35,17 @@ class TestMolmoAct2Postprocessor:
         result = processor({ACTION: np.array([[-0.5, 0.5]], dtype=np.float32)})
         np.testing.assert_array_equal(result[ACTION], [[-0.5, 0.5]])
 
+    def test_uses_fixed_so101_transform_by_default(self) -> None:
+        checkpoint_values = [1.0, 88.0, 93.0]
+        processor = MolmoAct2Postprocessor(
+            action_stats={"q01": checkpoint_values, "q99": checkpoint_values},
+            adapt_to_so101=True,
+        )
+
+        result = processor({ACTION: np.zeros((1, 3), dtype=np.float32)})
+
+        np.testing.assert_array_equal(result[ACTION], [[1.0, 2.0, 3.0]])
+
     def test_missing_action_raises(self) -> None:
         with pytest.raises(ValueError, match="action tensor"):
             MolmoAct2Postprocessor()({"other": np.zeros(1)})

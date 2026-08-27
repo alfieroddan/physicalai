@@ -10,6 +10,7 @@ from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT
 from physicalai.inference.manifest import ComponentSpec
 from physicalai.inference.component_factory import instantiate_component
 from physicalai.inference.preprocessors import MolmoAct2ModelInputs, MolmoAct2Preprocessor
+from physicalai.inference.preprocessors.molmoact2_image import MolmoAct2ImageProcessor
 from physicalai.inference.postprocessors import MolmoAct2Postprocessor
 
 
@@ -94,6 +95,22 @@ class TestMolmoAct2Preprocessor:
         })
         assert "<state_128><state_255>" in result[TASK][0]
 
+    def test_supports_mean_std_normalization(self) -> None:
+        processor = MolmoAct2Preprocessor(
+            image_keys=[],
+            image_size=(28, 28),
+            num_state_tokens=4,
+            state_stats={"mean": [0.0], "std": [2.0]},
+            normalization_mode="MEAN_STD",
+        )
+        result = processor({
+            STATE: np.array([[2.0]], dtype=np.float32),
+            TASK: "move",
+            IMAGES: np.zeros((1, 3, 28, 28), dtype=np.uint8),
+        })
+
+        assert "<state_3>" in result[TASK][0]
+
     def test_preserves_masked_tokenizer_padding(self) -> None:
         result = _assemble()({
             TOKENIZED_PROMPT: np.array([[99, 5, 0, 0]], dtype=np.int64),
@@ -113,12 +130,37 @@ class TestMolmoAct2Preprocessor:
                 IMAGES: np.zeros((1, 1, 3, 28, 28), dtype=np.float32),
             })
 
+    def test_nullable_single_crop_columns_follow_image_setting(self) -> None:
+        result = _assemble(use_single_crop_col_tokens=None)({
+            TOKENIZED_PROMPT: np.array([[99]], dtype=np.int64),
+            TOKENIZED_PROMPT_MASK: np.array([[1]], dtype=np.bool_),
+            IMAGES: np.zeros((1, 1, 3, 28, 28), dtype=np.float32),
+        })
+
+        assert result["input_ids"].tolist() == [[1, 10, 11, 13, 12]]
+
     def test_rejects_missing_state(self) -> None:
         with pytest.raises(ValueError, match="state"):
             _prepare()({TASK: ["move"], IMAGES: np.zeros((1, 3, 28, 28), dtype=np.uint8)})
 
     def test_model_inputs_is_distinct_class(self) -> None:
         assert MolmoAct2ModelInputs is not MolmoAct2Preprocessor
+
+
+class TestMolmoAct2ImageProcessor:
+    def test_resize_mode_matches_patch_layout(self) -> None:
+        processor = MolmoAct2ImageProcessor(
+            crop_mode="resize",
+            size={"height": 28, "width": 28},
+            patch_size=14,
+            pooling_size=(2, 2),
+        )
+
+        result = processor(np.zeros((2, 3, 28, 28), dtype=np.float32))
+
+        assert result["pixel_values"].shape == (2, 4, 588)
+        assert result["image_token_pooling"].tolist() == [[0, 1, 2, 3], [0, 1, 2, 3]]
+        assert result["image_grids"].tolist() == [[1, 1, 0, 0], [1, 1, 0, 0]]
 
 
 class TestMolmoAct2ManifestPipeline:

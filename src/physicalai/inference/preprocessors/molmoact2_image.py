@@ -1,364 +1,102 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""NumPy image preprocessing helpers for MolmoAct2 inference."""
+"""NumPy image patchification for MolmoAct2 inference."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import cv2
 import numpy as np
 
-_GRAYSCALE_NDIM = 2
-
-
-def _normalize_image(image: np.ndarray, image_mean: list[float], image_std: list[float]) -> np.ndarray:
-    if np.allclose(image_mean, [0.5, 0.5, 0.5]) and np.allclose(image_std, [0.5, 0.5, 0.5]):
-        return image * np.asarray(2.0, dtype=np.float32) - np.asarray(1.0, dtype=np.float32)
-    image = image.astype(np.float32)
-    image -= np.asarray(image_mean, dtype=np.float32)[None, None, :]
-    image /= np.asarray(image_std, dtype=np.float32)[None, None, :]
-    return image
-
-
-def _resize_image(image: np.ndarray, desired_output_size: list[int]) -> np.ndarray:
-    height, width = int(desired_output_size[0]), int(desired_output_size[1])
-    resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
-    if resized.ndim == _GRAYSCALE_NDIM:
-        resized = resized[:, :, None]
-
-    if np.issubdtype(image.dtype, np.floating):
-        resized = np.clip(resized, 0.0, 1.0).astype(np.float32)
-    else:
-        resized = resized.astype(np.float32) / 255.0
-    return resized
-
-
-def _select_tiling(h: int, w: int, patch_size: int, max_num_crops: int) -> np.ndarray:
-    tilings: list[tuple[int, int]] = []
-    for i in range(1, max_num_crops + 1):
-        tilings.extend((i, j) for j in range(1, max_num_crops + 1) if i * j <= max_num_crops)
-    tilings.sort(key=lambda x: (x[0] * x[1], x[0]))
-    candidate_tilings = np.asarray(tilings, dtype=np.int32)
-    candidate_resolutions = candidate_tilings * patch_size
-
-    original_size = np.asarray([h, w], dtype=np.float32)
-    with np.errstate(divide="ignore"):
-        required_scale = candidate_resolutions.astype(np.float32) / original_size[None, :]
-    required_scale = np.min(required_scale, axis=-1, keepdims=True)
-    if np.all(required_scale < 1):
-        ix = int(np.argmax(required_scale))
-    else:
-        required_scale = np.where(required_scale < 1.0, 1e10, required_scale)
-        ix = int(np.argmin(required_scale))
-    return candidate_tilings[ix]
-
-
-def _build_resized_image(
-    image: np.ndarray,
-    base_image_input_size: list[int],
-    image_mean: list[float],
-    image_std: list[float],
-    image_patch_size: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    resized = _resize_image(image, base_image_input_size)
-    resized = _normalize_image(resized, image_mean, image_std)
-    resized = resized[None, ...]
-    crop_patch_w = base_image_input_size[1] // image_patch_size
-    crop_patch_h = base_image_input_size[0] // image_patch_size
-    resize_idx = np.arange(crop_patch_w * crop_patch_h).reshape([crop_patch_h, crop_patch_w])
-    return resized, resize_idx
-
-
-@dataclass(frozen=True)
-class _CropGeometry:
-    left_margin: int
-    right_margin: int
-    total_margin_pixels: int
-    crop_window_size: int
-    crop_patch_w: int
-    crop_patch_h: int
-    crop_size: int
-
-
-def _crop_geometry(
-    overlap_margins: list[int], base_image_input_size: list[int], image_patch_size: int
-) -> _CropGeometry:
-    left_margin, right_margin = overlap_margins
-    crop_patches = base_image_input_size[0] // image_patch_size
-    crop_window_patches = crop_patches - (right_margin + left_margin)
-    return _CropGeometry(
-        left_margin=left_margin,
-        right_margin=right_margin,
-        total_margin_pixels=image_patch_size * (right_margin + left_margin),
-        crop_window_size=crop_window_patches * image_patch_size,
-        crop_patch_w=base_image_input_size[1] // image_patch_size,
-        crop_patch_h=base_image_input_size[0] // image_patch_size,
-        crop_size=base_image_input_size[0],
-    )
-
-
-def _fill_overlapping_crops(
-    src: np.ndarray, tiling: np.ndarray, geometry: _CropGeometry
-) -> tuple[np.ndarray, np.ndarray]:
-    n_crops = int(tiling[0] * tiling[1])
-    crop_arr = np.zeros([n_crops, geometry.crop_size, geometry.crop_size, 3], dtype=src.dtype)
-    patch_idx_arr = np.zeros([n_crops, geometry.crop_patch_h, geometry.crop_patch_w], dtype=np.int32)
-
-    on_crop = 0
-    for i in range(int(tiling[0])):
-        y0 = i * geometry.crop_window_size
-        for j in range(int(tiling[1])):
-            x0 = j * geometry.crop_window_size
-            crop_arr[on_crop] = src[y0 : y0 + geometry.crop_size, x0 : x0 + geometry.crop_size]
-            patch_idx = np.arange(geometry.crop_patch_w * geometry.crop_patch_h).reshape(
-                geometry.crop_patch_h, geometry.crop_patch_w
-            )
-            patch_idx += on_crop * geometry.crop_patch_h * geometry.crop_patch_w
-
-            if i != 0:
-                patch_idx[: geometry.left_margin, :] = -1
-            if j != 0:
-                patch_idx[:, : geometry.left_margin] = -1
-            if i != int(tiling[0]) - 1:
-                patch_idx[-geometry.right_margin :, :] = -1
-            if j != int(tiling[1]) - 1:
-                patch_idx[:, -geometry.right_margin :] = -1
-            patch_idx_arr[on_crop] = patch_idx
-            on_crop += 1
-    return crop_arr, patch_idx_arr
-
-
-def _build_overlapping_crops(
-    image: np.ndarray,
-    max_crops: int,
-    overlap_margins: list[int],
-    base_image_input_size: list[int],
-    image_mean: list[float],
-    image_std: list[float],
-    image_patch_size: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    geometry = _crop_geometry(overlap_margins, base_image_input_size, image_patch_size)
-    original_image_h, original_image_w = image.shape[:2]
-
-    tiling = _select_tiling(
-        original_image_h - geometry.total_margin_pixels,
-        original_image_w - geometry.total_margin_pixels,
-        geometry.crop_window_size,
-        max_crops,
-    )
-
-    src = _resize_image(
-        image,
-        [
-            tiling[0] * geometry.crop_window_size + geometry.total_margin_pixels,
-            tiling[1] * geometry.crop_window_size + geometry.total_margin_pixels,
-        ],
-    )
-    src = _normalize_image(src, image_mean, image_std)
-
-    crop_arr, patch_idx_arr = _fill_overlapping_crops(src, tiling, geometry)
-    patch_idx_arr = patch_idx_arr.reshape(int(tiling[0]), int(tiling[1]), geometry.crop_patch_h, geometry.crop_patch_w)
-    patch_idx_arr = patch_idx_arr.transpose(0, 2, 1, 3).reshape(-1)
-    patch_idx_arr = patch_idx_arr[patch_idx_arr >= 0].reshape(
-        src.shape[0] // image_patch_size,
-        src.shape[1] // image_patch_size,
-    )
-    return crop_arr, patch_idx_arr
-
-
-def _batch_pixels_to_patches(array: np.ndarray, patch_size: int) -> np.ndarray:
-    n_crops, h, w, c = array.shape
-    h_patches = h // patch_size
-    w_patches = w // patch_size
-    array = array.reshape(n_crops, h_patches, patch_size, w_patches, patch_size, c)
-    array = array.transpose(0, 1, 3, 2, 4, 5)
-    return array.reshape(n_crops, h_patches * w_patches, patch_size * patch_size * c)
-
-
-def _arange_for_pooling(idx_arr: np.ndarray, pool_h: int, pool_w: int) -> np.ndarray:
-    h_pad = pool_h * ((idx_arr.shape[0] + pool_h - 1) // pool_h) - idx_arr.shape[0]
-    w_pad = pool_w * ((idx_arr.shape[1] + pool_w - 1) // pool_w) - idx_arr.shape[1]
-    idx_arr = np.pad(
-        idx_arr,
-        [[h_pad // 2, (h_pad + 1) // 2], [w_pad // 2, (w_pad + 1) // 2]],
-        mode="constant",
-        constant_values=-1,
-    )
-    blocks_h = idx_arr.shape[0] // pool_h
-    blocks_w = idx_arr.shape[1] // pool_w
-    idx_arr = idx_arr.reshape(blocks_h, pool_h, blocks_w, pool_w)
-    idx_arr = idx_arr.transpose(0, 2, 1, 3)
-    return idx_arr.reshape(blocks_h, blocks_w, pool_h * pool_w)
-
-
-def _image_to_patches_and_grids(
-    image: np.ndarray,
-    max_crops: int,
-    overlap_margins: list[int],
-    base_image_input_size: list[int],
-    image_mean: list[float],
-    image_std: list[float],
-    image_patch_size: int,
-    image_pooling_w: int,
-    image_pooling_h: int,
-    crop_mode: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    crop_patch_w = base_image_input_size[1] // image_patch_size
-    crop_patch_h = base_image_input_size[0] // image_patch_size
-
-    if crop_mode == "resize":
-        resized, resize_idx = _build_resized_image(
-            image,
-            base_image_input_size,
-            image_mean,
-            image_std,
-            image_patch_size,
-        )
-        resize_idx = _arange_for_pooling(resize_idx, image_pooling_h, image_pooling_w)
-        resized_h, resized_w = resize_idx.shape[:2]
-        resize_idx = resize_idx.reshape(-1, image_pooling_h * image_pooling_w)
-        image_grid = [np.asarray([resized_h, resized_w, 0, 0])]
-        return np.stack(image_grid, 0), _batch_pixels_to_patches(resized, image_patch_size), resize_idx
-
-    if crop_mode not in {"overlap-and-resize-c2", "overlap-and-resize"}:
-        msg = f"Unsupported MolmoAct2 image crop_mode {crop_mode!r}."
-        raise ValueError(msg)
-
-    crop_arr, patch_idx_arr = _build_overlapping_crops(
-        image,
-        max_crops,
-        overlap_margins,
-        base_image_input_size,
-        image_mean,
-        image_std,
-        image_patch_size,
-    )
-    pooling_idx = _arange_for_pooling(patch_idx_arr, image_pooling_h, image_pooling_w)
-    h, w = pooling_idx.shape[:2]
-    pooling_idx = pooling_idx.reshape(-1, image_pooling_h * image_pooling_w)
-
-    resized, resize_idx = _build_resized_image(
-        image,
-        base_image_input_size,
-        image_mean,
-        image_std,
-        image_patch_size,
-    )
-    crop_arr = np.concatenate([resized, crop_arr], axis=0)
-
-    resize_idx = _arange_for_pooling(resize_idx, image_pooling_h, image_pooling_w)
-    resized_h, resized_w = resize_idx.shape[:2]
-    resize_idx = resize_idx.reshape(-1, image_pooling_h * image_pooling_w)
-
-    pooling_idx = np.where(pooling_idx >= 0, pooling_idx + crop_patch_h * crop_patch_w, -1)
-    pooling_idx = np.concatenate([resize_idx, pooling_idx], axis=0)
-    image_grid = [np.asarray([resized_h, resized_w, h, w])]
-    return np.stack(image_grid, 0), _batch_pixels_to_patches(crop_arr, image_patch_size), pooling_idx
-
-
-def _to_hwc_uint8(images_bchw: np.ndarray) -> list[np.ndarray]:
-    out: list[np.ndarray] = []
-    for image in images_bchw:
-        img = image
-        if np.issubdtype(img.dtype, np.floating):
-            if float(np.max(img)) <= 1.0:
-                img *= 255.0
-            img = np.clip(img, 0.0, 255.0).astype(np.uint8)
-        elif img.dtype != np.uint8:
-            img = np.clip(img, 0, 255).astype(np.uint8)
-        out.append(np.transpose(img, (1, 2, 0)))
-    return out
+_IMAGE_NDIM = 4
+_NUM_CHANNELS = 3
 
 
 class MolmoAct2ImageProcessor:
-    """NumPy image processor producing MolmoAct2 patch tensors and pooling metadata."""
+    """Normalize and patchify pre-resized BCHW images."""
 
     def __init__(
         self,
         *,
+        crop_mode: str = "resize",
         size: dict[str, int] | None = None,
+        patch_size: int = 14,
+        pooling_size: list[int] | tuple[int, int] = (2, 2),
         image_mean: list[float] | None = None,
         image_std: list[float] | None = None,
-        do_convert_rgb: bool = True,
-        max_crops: int = 8,
-        overlap_margins: list[int] | None = None,
-        crop_mode: str = "overlap-and-resize-c2",
-        patch_size: int = 14,
-        pooling_size: list[int] | None = None,
     ) -> None:
-        """Initialize image processing options.
-
-        Args:
-            size: Output image height and width.
-            image_mean: Per-channel image normalization means.
-            image_std: Per-channel image normalization standard deviations.
-            do_convert_rgb: Whether to convert images to RGB.
-            max_crops: Maximum number of overlapping crops.
-            overlap_margins: Left and right overlap margins in patches.
-            crop_mode: Image crop strategy.
-            patch_size: Height and width of each square image patch.
-            pooling_size: Width and height of each patch-pooling window.
-        """
-        self.size = size if size is not None else {"height": 378, "width": 378}
-        self.image_mean = image_mean if image_mean is not None else [0.5, 0.5, 0.5]
-        self.image_std = image_std if image_std is not None else [0.5, 0.5, 0.5]
-        self.do_convert_rgb = do_convert_rgb
-        self.max_crops = int(max_crops)
-        self.overlap_margins = overlap_margins if overlap_margins is not None else [4, 4]
+        """Store image settings and precompute pooling indices."""
+        size = size or {"height": 378, "width": 378}
         self.crop_mode = crop_mode
+        self.height = int(size["height"])
+        self.width = int(size["width"])
         self.patch_size = int(patch_size)
-        self.pooling_size = pooling_size if pooling_size is not None else [2, 2]
+        self.pool_h, self.pool_w = (int(pooling_size[0]), int(pooling_size[1]))
+        self.image_mean = image_mean or [0.5, 0.5, 0.5]
+        self.image_std = image_std or [0.5, 0.5, 0.5]
+        self._pooling, self.pooled_h, self.pooled_w = self._pooling_indices()
 
-    def __call__(self, images_bchw: np.ndarray) -> dict[str, np.ndarray]:
-        """Convert BCHW images into patches and pooling metadata.
+    def __call__(self, images: np.ndarray) -> dict[str, np.ndarray]:
+        """Return patches, pooling indices, grids, and crop counts.
 
         Returns:
-            Model-ready pixel values, pooling indices, image grids, and crop counts.
+            Model-ready image arrays and layout metadata.
+
+        Raises:
+            ValueError: If image shape, size, or dtype is unsupported.
+            NotImplementedError: If crop mode is not ``resize``.
         """
-        image_list = _to_hwc_uint8(images_bchw)
-        patch_batches: list[np.ndarray] = []
-        pooling_batches: list[np.ndarray] = []
-        grids: list[np.ndarray] = []
-        image_num_crops: list[int] = []
+        images = np.asarray(images)
+        if images.ndim != _IMAGE_NDIM or images.shape[1] != _NUM_CHANNELS:
+            msg = f"Expected images of shape (M, 3, H, W), got {images.shape}."
+            raise ValueError(msg)
+        if images.shape[2:] != (self.height, self.width):
+            msg = f"Expected images of size {(self.height, self.width)}, got {images.shape[2:]}."
+            raise ValueError(msg)
+        if self.crop_mode != "resize":
+            msg = f"MolmoAct2ImageProcessor only supports crop_mode='resize', got {self.crop_mode!r}."
+            raise NotImplementedError(msg)
+        if images.dtype not in {np.dtype(np.float16), np.dtype(np.float32)}:
+            msg = f"Expected images of dtype float16 or float32, got {images.dtype}."
+            raise ValueError(msg)
 
-        base_image_input_size = [int(self.size["height"]), int(self.size["width"])]
-        pool_h, pool_w = int(self.pooling_size[0]), int(self.pooling_size[1])
-
-        for image in image_list:
-            image_grid, crops, pooled_idx = _image_to_patches_and_grids(
-                image,
-                self.max_crops,
-                self.overlap_margins,
-                base_image_input_size,
-                self.image_mean,
-                self.image_std,
-                self.patch_size,
-                pool_w,
-                pool_h,
-                self.crop_mode,
-            )
-            patch_batches.append(crops)
-            pooling_batches.append(pooled_idx)
-            grids.append(image_grid)
-            image_num_crops.append(int(crops.shape[0]))
-
-        pixel_values = np.concatenate(patch_batches, axis=0) if patch_batches else np.zeros((0, 0, 0), dtype=np.float32)
-        image_token_pooling = (
-            np.concatenate(pooling_batches, axis=0)
-            if pooling_batches
-            else np.zeros((0, pool_h * pool_w), dtype=np.int64)
-        )
-        image_grids = np.concatenate(grids, axis=0) if grids else np.zeros((0, 4), dtype=np.int64)
-        image_num_crops_arr = np.asarray(image_num_crops, dtype=np.int64)
-
+        count = images.shape[0]
+        mean = np.asarray(self.image_mean, dtype=images.dtype).reshape(1, 3, 1, 1)
+        std = np.asarray(self.image_std, dtype=images.dtype).reshape(1, 3, 1, 1)
+        pixel_values = self._patchify((images - mean) / std)
+        pooling = np.tile(self._pooling, (count, 1))
+        grid = np.asarray([self.pooled_h, self.pooled_w, 0, 0], dtype=np.int64)
         return {
-            "pixel_values": pixel_values.astype(np.float32),
-            "image_token_pooling": image_token_pooling.astype(np.int64),
-            "image_grids": image_grids.astype(np.int64),
-            "image_num_crops": image_num_crops_arr,
+            "pixel_values": pixel_values,
+            "image_token_pooling": pooling,
+            "image_grids": np.tile(grid, (count, 1)),
+            "image_num_crops": np.ones(count, dtype=np.int64),
         }
+
+    def _patchify(self, pixels: np.ndarray) -> np.ndarray:
+        count, channels, height, width = pixels.shape
+        patch = self.patch_size
+        if height % patch or width % patch:
+            msg = f"Image size {(height, width)} must be divisible by patch_size={patch}."
+            raise ValueError(msg)
+        pixels = pixels.transpose(0, 2, 3, 1)
+        pixels = pixels.reshape(count, height // patch, patch, width // patch, patch, channels)
+        return pixels.transpose(0, 1, 3, 2, 4, 5).reshape(count, -1, patch * patch * channels)
+
+    def _pooling_indices(self) -> tuple[np.ndarray, int, int]:
+        patch_h = self.height // self.patch_size
+        patch_w = self.width // self.patch_size
+        pooled_h = (patch_h + self.pool_h - 1) // self.pool_h
+        pooled_w = (patch_w + self.pool_w - 1) // self.pool_w
+        pad_h = pooled_h * self.pool_h - patch_h
+        pad_w = pooled_w * self.pool_w - patch_w
+        indices = np.arange(patch_h * patch_w, dtype=np.int64).reshape(patch_h, patch_w)
+        indices = np.pad(
+            indices,
+            ((pad_h // 2, (pad_h + 1) // 2), (pad_w // 2, (pad_w + 1) // 2)),
+            constant_values=-1,
+        )
+        indices = indices.reshape(pooled_h, self.pool_h, pooled_w, self.pool_w)
+        return indices.transpose(0, 2, 1, 3).reshape(-1, self.pool_h * self.pool_w), pooled_h, pooled_w
 
 
 __all__ = ["MolmoAct2ImageProcessor"]

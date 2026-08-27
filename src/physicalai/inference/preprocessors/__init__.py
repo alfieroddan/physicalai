@@ -10,7 +10,8 @@ flattens and filters them for the runtime adapter.
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.preprocessors.hf_tokenizer import HFTokenizer
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
-from physicalai.inference.preprocessors.molmoact2 import MolmoAct2ModelInputs, MolmoAct2Preprocessor
+from physicalai.inference.preprocessors.molmoact2 import MolmoAct2Preprocessor
+from physicalai.inference.preprocessors.molmoact2_inputs import MolmoAct2ModelInputs
 from physicalai.inference.preprocessors.new_line import NewLinePreprocessor
 from physicalai.inference.preprocessors.ov_tokenizer import OVTokenizer
 from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
