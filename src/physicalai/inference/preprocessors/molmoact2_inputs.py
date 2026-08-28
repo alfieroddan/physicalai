@@ -30,6 +30,7 @@ _PACKED_IMAGE_NDIM = 5
 class MolmoAct2InputConfig:
     """Token ids and layout flags needed to assemble MolmoAct2 model inputs."""
 
+    pad_token_id: int
     image_placeholder_token_id: int
     image_patch_id: int
     image_start_token_id: int
@@ -145,8 +146,6 @@ def expand_image_placeholders(
     if int(image_grids.shape[0]) == 0:
         return input_ids, attention_mask, _build_token_type_ids(config, input_ids, attention_mask)
 
-    pad_values = input_ids[attention_mask == 0]
-    pad_token_id = int(pad_values[0]) if pad_values.size > 0 else 0
     placeholder_id = int(config.image_placeholder_token_id)
 
     expanded_rows: list[list[int]] = []
@@ -169,7 +168,7 @@ def expand_image_placeholders(
         expanded_widths.append(len(expanded) + int((~valid).sum()))
 
     max_len = max(expanded_widths, default=1)
-    out_ids = np.full((len(expanded_rows), max_len), pad_token_id, dtype=input_ids.dtype)
+    out_ids = np.full((len(expanded_rows), max_len), config.pad_token_id, dtype=input_ids.dtype)
     out_mask = np.zeros((len(expanded_rows), max_len), dtype=attention_mask.dtype)
     for batch_idx, row in enumerate(expanded_rows):
         if not row:
@@ -279,12 +278,22 @@ def build_batched_images(
         and ``(N, max_pooled, pool_area)``.
 
     Raises:
-        ValueError: If image-end token and image-grid counts differ.
+        ValueError: If image counts cannot be inferred from image-end tokens.
     """
-    counts = (input_ids == int(config.image_end_token_id)).sum(1)
+    raw_counts = (input_ids == int(config.image_end_token_id)).sum(1)
     num_images = int(image_grids.shape[0])
-    if int(counts.sum()) != num_images:
-        msg = f"image_end tokens ({int(counts.sum())}) do not match image grids ({num_images})."
+    total_end_tokens = int(raw_counts.sum())
+    if num_images == 0:
+        counts = np.zeros_like(raw_counts)
+    elif total_end_tokens == num_images:
+        counts = raw_counts
+    elif total_end_tokens == 2 * num_images:
+        counts = raw_counts // 2
+    else:
+        msg = (
+            "Could not infer image counts from image-end tokens: "
+            f"end_tokens={total_end_tokens}, image_grids={num_images}."
+        )
         raise ValueError(msg)
 
     layout = _batch_layout(counts, pixel_values, image_grids, image_num_crops)
@@ -354,6 +363,7 @@ class MolmoAct2ModelInputs(Preprocessor):
     def __post_init__(self) -> None:
         """Build the input layout and image processor."""
         self._layout = MolmoAct2InputConfig(
+            pad_token_id=self.pad_token_id,
             image_placeholder_token_id=self.image_placeholder_token_id,
             image_patch_id=self.image_patch_id,
             image_start_token_id=self.image_start_token_id,

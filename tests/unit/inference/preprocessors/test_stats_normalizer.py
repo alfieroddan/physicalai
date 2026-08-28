@@ -173,8 +173,8 @@ class TestStatsNormalizerQuantiles:
             mode="quantiles",
             stats={
                 "state": {
-                    "q01": [-1.0, -1.0, -1.0],
-                    "q99": [1.0, 1.0, 1.0],
+                    "q01": [0.0, 0.0, 0.0],
+                    "q99": [2.0, 2.0, 2.0],
                     "mask": [True, False, True],
                 },
             },
@@ -183,7 +183,7 @@ class TestStatsNormalizerQuantiles:
 
         result = normalizer(inputs)
 
-        np.testing.assert_allclose(result["state"], [[0.5, 4.0, -0.5]])
+        np.testing.assert_allclose(result["state"], [[-0.5, 4.0, -1.5]])
 
 
 class TestStatsNormalizerIdentity:

@@ -10,6 +10,11 @@ from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT
 from physicalai.inference.manifest import ComponentSpec
 from physicalai.inference.component_factory import instantiate_component
 from physicalai.inference.preprocessors import MolmoAct2ModelInputs, MolmoAct2Preprocessor
+from physicalai.inference.preprocessors.molmoact2_inputs import (
+    MolmoAct2InputConfig,
+    build_batched_images,
+    expand_image_placeholders,
+)
 from physicalai.inference.preprocessors.molmoact2_image import MolmoAct2ImageProcessor
 from physicalai.inference.postprocessors import MolmoAct2Postprocessor
 
@@ -68,6 +73,21 @@ class TestMolmoAct2Preprocessor:
         assert "The task is to pick up." in result[TASK][0]
         assert "<state_0><state_3>" in result[TASK][0]
 
+    def test_nested_image_fallback_is_sorted_but_explicit_order_is_preserved(self) -> None:
+        images = {
+            "wrist": np.full((1, 3, 28, 28), 255, dtype=np.uint8),
+            "top": np.zeros((1, 3, 28, 28), dtype=np.uint8),
+        }
+        inputs = {STATE: np.zeros((1, 2), dtype=np.float32), TASK: "move", IMAGES: images}
+
+        fallback = MolmoAct2Preprocessor(image_keys=[], image_size=(28, 28))(inputs)[IMAGES]
+        explicit = MolmoAct2Preprocessor(image_keys=["wrist", "top"], image_size=(28, 28))(inputs)[IMAGES]
+
+        assert float(fallback[0].max()) == 0.0
+        assert float(fallback[1].min()) == 1.0
+        assert float(explicit[0].min()) == 1.0
+        assert float(explicit[1].max()) == 0.0
+
     def test_accepts_batched_channels_last_camera_frames(self) -> None:
         observation = _observation(image_count=2)
         observation[f"{IMAGES}.top"] = np.zeros((1, 28, 28, 3), dtype=np.uint8)
@@ -121,6 +141,46 @@ class TestMolmoAct2Preprocessor:
         assert result["input_ids"].shape == (1, 7)
         assert result["attention_mask"].shape == (1, 7)
         assert int(result["attention_mask"].sum()) == 5
+
+    def test_placeholder_expansion_uses_configured_padding(self) -> None:
+        config = MolmoAct2InputConfig(
+            pad_token_id=7,
+            image_placeholder_token_id=99,
+            image_patch_id=11,
+            image_start_token_id=10,
+            image_end_token_id=12,
+        )
+
+        input_ids, attention_mask, _ = expand_image_placeholders(
+            config=config,
+            input_ids=np.array([[99, 5], [99, 99]], dtype=np.int64),
+            attention_mask=np.ones((2, 2), dtype=np.int64),
+            image_grids=np.array([[1, 1, 0, 0]] * 3, dtype=np.int64),
+        )
+
+        assert input_ids[0].tolist() == [10, 11, 12, 5, 7, 7]
+        assert attention_mask[0].tolist() == [1, 1, 1, 1, 0, 0]
+
+    def test_build_batched_images_supports_multi_crop_grids(self) -> None:
+        config = MolmoAct2InputConfig(
+            pad_token_id=0,
+            image_placeholder_token_id=99,
+            image_patch_id=11,
+            image_start_token_id=10,
+            image_end_token_id=12,
+        )
+
+        images, pooling = build_batched_images(
+            config,
+            input_ids=np.array([[10, 11, 12, 10, 11, 12], [10, 11, 12, 10, 11, 12]]),
+            pixel_values=np.arange(8, dtype=np.float32).reshape(2, 4, 1),
+            image_token_pooling=np.arange(10, dtype=np.int64).reshape(10, 1) % 4,
+            image_grids=np.array([[1, 1, 2, 2], [1, 1, 2, 2]], dtype=np.int64),
+            image_num_crops=np.ones(2, dtype=np.int64),
+        )
+
+        assert images.shape == (2, 1, 4, 1)
+        assert pooling.shape == (2, 5, 1)
 
     def test_rejects_placeholder_image_mismatch(self) -> None:
         with pytest.raises(ValueError, match="placeholders"):

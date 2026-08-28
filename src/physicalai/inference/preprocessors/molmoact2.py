@@ -252,7 +252,8 @@ class MolmoAct2Preprocessor(Preprocessor):
         if not self.image_keys and isinstance(container, np.ndarray):
             images = [container]
         elif not self.image_keys and isinstance(container, dict):
-            images = [np.asarray(value) for key, value in container.items() if "is_pad" not in str(key)]
+            keys = sorted(key for key in container if "is_pad" not in str(key))
+            images = [np.asarray(container[key]) for key in keys]
         elif not self.image_keys and not images:
             keys = sorted(key for key in inputs if key.startswith(f"{IMAGES}.") and "is_pad" not in key)
             images = [np.asarray(inputs[key]) for key in keys]
