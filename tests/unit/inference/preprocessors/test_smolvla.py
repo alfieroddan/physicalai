@@ -86,6 +86,13 @@ class TestResizeSmolVLACall:
         assert result[IMAGES].shape[3] == 64
         assert result[IMAGES].shape[4] == 64
 
+    def test_non_square_resolution_not_transposed(self) -> None:
+        # Regression: image_resolution is (height, width); _resize_with_pad takes (width, height).
+        prep = ResizeSmolVLA(image_resolution=(120, 240))
+        img = np.random.rand(1, 3, 60, 60).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 1, 3, 120, 240)
+
     def test_dict_images_stacked(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64))
         inputs = {
@@ -214,151 +221,122 @@ class TestResizeSmolVLAResizeWithPad:
             prep({IMAGES: img})
 
 
-class TestResizeSmolVLAImageKeyReorderMapInit:
-    """Tests for image_key_reorder_map and num_cameras params added for physical-ai-studio compat."""
+class TestResizeSmolVLACameraSlots:
+    @staticmethod
+    def _inputs() -> dict[str, np.ndarray]:
+        return {
+            f"{IMAGES}.top": np.zeros((1, 3, 64, 64), dtype=np.float32),
+            f"{IMAGES}.wrist": np.ones((1, 3, 64, 64), dtype=np.float32),
+        }
 
-    def test_accepts_image_key_reorder_map(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"left": 0, "right": 1})
-        assert prep._image_key_reorder_map == {"left": 0, "right": 1}
+    def test_reorder_map_orders_cameras(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1, "wrist": 0})
+        result = prep(self._inputs())
+        # wrist (all ones -> +1) occupies slot 0, top (all zeros -> -1) slot 1
+        np.testing.assert_allclose(result[IMAGES][0].max(), 1.0, atol=1e-5)
+        np.testing.assert_allclose(result[IMAGES][1].max(), -1.0, atol=1e-5)
 
-    def test_prefixed_keys_normalised_to_bare(self) -> None:
-        # Studio may export "images.wrist" or bare "wrist"; both must normalise to bare.
-        prep = ResizeSmolVLA(image_key_reorder_map={"images.wrist": 0, "images.overhead": 1})
-        assert prep._image_key_reorder_map == {"wrist": 0, "overhead": 1}
+    def test_reorder_map_accepts_prefixed_keys(self) -> None:
+        prep = ResizeSmolVLA(
+            image_resolution=(64, 64),
+            image_key_reorder_map={f"{IMAGES}.top": 1, f"{IMAGES}.wrist": 0},
+        )
+        result = prep(self._inputs())
+        np.testing.assert_allclose(result[IMAGES][0].max(), 1.0, atol=1e-5)
 
-    def test_mixed_bare_and_prefixed_keys_normalised(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"images.wrist": 0, "overhead": 1})
-        assert prep._image_key_reorder_map == {"wrist": 0, "overhead": 1}
+    def test_reorder_map_key_mismatch_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 0})
+        with pytest.raises(ValueError, match="must match the input image keys exactly"):
+            prep(self._inputs())
 
-    def test_accepts_num_cameras(self) -> None:
-        prep = ResizeSmolVLA(num_cameras=3)
-        assert prep._num_cameras == 3
-
-    def test_none_image_key_reorder_map_stays_none(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map=None)
-        assert prep._image_key_reorder_map is None
-
-    def test_default_image_key_reorder_map_is_none(self) -> None:
-        assert ResizeSmolVLA()._image_key_reorder_map is None
-
-    def test_default_num_cameras_is_zero(self) -> None:
-        assert ResizeSmolVLA()._num_cameras == 0
-
-
-class TestResizeSmolVLAResolveImageOrder:
-    def test_natural_order_when_no_map(self) -> None:
-        prep = ResizeSmolVLA()
-        assert prep._resolve_image_order(["b", "a", "c"]) == ["b", "a", "c"]
-
-    def test_reorder_by_map(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"right": 0, "left": 1})
-        assert prep._resolve_image_order(["left", "right"]) == ["right", "left"]
-
-    def test_reorder_by_map_with_prefixed_img_keys(self) -> None:
-        # Studio exports bare keys; PolicySource sends images.-prefixed flat keys.
-        prep = ResizeSmolVLA(image_key_reorder_map={"right": 0, "left": 1}, num_cameras=2)
-        assert prep._resolve_image_order(["images.left", "images.right"]) == ["images.right", "images.left"]
-
-    def test_num_cameras_fills_none_slots(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=3)
-        layout = prep._resolve_image_order(["cam"])
-        assert len(layout) == 3
-        assert layout[1] == "cam"
-        assert layout[0] is None
-        assert layout[2] is None
-
-    def test_num_cameras_missing_key_in_map_fills_none_slot(self) -> None:
-        # Map describes all possible cameras; only a subset is present in inputs.
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam0": 0, "cam1": 1}, num_cameras=2)
-        assert prep._resolve_image_order(["cam1"]) == [None, "cam1"]
-
-    def test_exact_camera_count_no_none_slots(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"a": 0, "b": 1}, num_cameras=2)
-        assert prep._resolve_image_order(["a", "b"]) == ["a", "b"]
-
-    def test_input_key_missing_from_map_raises(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"known": 0}, num_cameras=2)
-        with pytest.raises(ValueError, match="Missing slot mapping for image keys"):
-            prep._resolve_image_order(["known", "unknown"])
-
-    def test_num_cameras_smaller_than_input_count_raises(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"a": 0, "b": 1, "c": 2}, num_cameras=2)
-        with pytest.raises(ValueError, match="num_cameras"):
-            prep._resolve_image_order(["a", "b", "c"])
-
-    def test_slot_index_out_of_range_raises(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 5}, num_cameras=2)
-        with pytest.raises(ValueError, match="out of range"):
-            prep._resolve_image_order(["cam"])
+    def test_negative_slot_index_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be non-negative"):
+            ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": -1, "wrist": 0})
 
     def test_duplicate_slot_index_raises(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"a": 0, "b": 0}, num_cameras=2)
-        with pytest.raises(ValueError, match="Duplicate camera slot"):
-            prep._resolve_image_order(["a", "b"])
+        with pytest.raises(ValueError, match="must be unique"):
+            ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 0, "wrist": 0})
 
+    def test_num_cameras_pads_empty_slots(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), num_cameras=3)
+        result = prep(self._inputs())
+        assert result[IMAGES].shape == (3, 1, 3, 64, 64)
+        assert result[IMAGE_MASKS].shape == (3, 1)
+        np.testing.assert_allclose(result[IMAGES][2], -1.0)
+        assert not result[IMAGE_MASKS][2].any()
+        assert result[IMAGE_MASKS][0].all()
 
-class TestResizeSmolVLANoneCameraSlot:
-    def test_single_camera_ndarray_bypasses_reorder_map(self) -> None:
-        # {IMAGES: ndarray} takes the isinstance(np.ndarray) branch; map is never consulted.
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 0}, num_cameras=1, image_resolution=(8, 8))
-        img = np.ones((1, 3, 8, 8), dtype=np.float32)
-        result = prep({IMAGES: img})
-        assert result[IMAGES].shape[0] == 1
-
-    def test_single_flat_key_bypasses_reorder_map(self) -> None:
-        # {"images.cam": ndarray} hits the len(img_keys)==1 branch; map is never consulted.
-        prep = ResizeSmolVLA(image_key_reorder_map={"other": 0}, num_cameras=1, image_resolution=(8, 8))
-        img = np.ones((1, 3, 8, 8), dtype=np.float32)
-        result = prep({f"{IMAGES}.cam": img})
-        assert result[IMAGES].shape[0] == 1
-
-    def test_none_slot_produces_black_image(self) -> None:
-        # num_cameras=2, only slot 1 supplied → slot 0 is None → black image
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
-        img = np.ones((1, 3, 8, 8), dtype=np.float32)
-        result = prep({IMAGES: {"cam": img}})
-        assert result[IMAGES].shape[0] == 2
-        np.testing.assert_allclose(result[IMAGES][0], -1.0, atol=1e-5)
-
-    def test_none_slot_mask_is_false(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
-        img = np.ones((1, 3, 8, 8), dtype=np.float32)
-        result = prep({IMAGES: {"cam": img}})
-        assert not result[IMAGE_MASKS][0].any()
-
-    def test_real_slot_mask_is_true(self) -> None:
-        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
-        img = np.ones((1, 3, 8, 8), dtype=np.float32)
-        result = prep({IMAGES: {"cam": img}})
-        assert result[IMAGE_MASKS][1].all()
-
-
-class TestResizeSmolVLAComponentSpecCompat:
-    """Regression: physical-ai-studio exports image_key_reorder_map and num_cameras
-    into ComponentSpec; instantiate_component must forward them to ResizeSmolVLA.__init__."""
-
-    def test_instantiate_via_component_spec(self) -> None:
-        from physicalai.inference.component_factory import instantiate_component
-        from physicalai.inference.manifest import ComponentSpec
-
-        spec = ComponentSpec(
-            type="smolvla_resize",
-            image_resolution=[64, 64],
-            image_key_reorder_map={"left": 0, "right": 1},
-            num_cameras=2,
+    def test_num_cameras_with_reorder_map_leaves_gap(self) -> None:
+        prep = ResizeSmolVLA(
+            image_resolution=(64, 64),
+            image_key_reorder_map={"top": 0, "wrist": 2},
+            num_cameras=3,
         )
-        prep = instantiate_component(spec)
-        assert isinstance(prep, ResizeSmolVLA)
-        assert prep._image_key_reorder_map == {"left": 0, "right": 1}
-        assert prep._num_cameras == 2
+        result = prep(self._inputs())
+        np.testing.assert_allclose(result[IMAGES][1], -1.0)
+        assert not result[IMAGE_MASKS][1].any()
+        np.testing.assert_allclose(result[IMAGES][2].max(), 1.0, atol=1e-5)
 
-    def test_instantiate_via_component_spec_empty_map(self) -> None:
-        from physicalai.inference.component_factory import instantiate_component
-        from physicalai.inference.manifest import ComponentSpec
+    def test_num_cameras_too_small_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), num_cameras=1)
+        with pytest.raises(ValueError, match="too small for the resolved camera slots"):
+            prep(self._inputs())
 
-        # Mirrors the default export when no reordering is needed; {} normalises to None.
-        spec = ComponentSpec(type="smolvla_resize", image_resolution=[512, 512], image_key_reorder_map={}, num_cameras=0)
-        prep = instantiate_component(spec)
-        assert isinstance(prep, ResizeSmolVLA)
-        assert not prep._image_key_reorder_map
-        assert prep._num_cameras == 0
+    def test_dict_images_respect_reorder_map(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1, "wrist": 0})
+        inputs = {
+            IMAGES: {
+                "top": np.zeros((1, 3, 64, 64), dtype=np.float32),
+                "wrist": np.ones((1, 3, 64, 64), dtype=np.float32),
+            },
+        }
+        result = prep(inputs)
+        np.testing.assert_allclose(result[IMAGES][0].max(), 1.0, atol=1e-5)
+
+    def test_no_images_returns_empty_arrays(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        result = prep({"task": "pick up"})
+        assert result[IMAGES].size == 0
+        assert result[IMAGE_MASKS].size == 0
+
+    def test_no_images_with_num_cameras_returns_dummy_slots(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(48, 64), num_cameras=2)
+        result = prep({"task": "pick up"})
+        assert result[IMAGES].shape == (2, 1, 3, 48, 64)
+        assert result[IMAGE_MASKS].shape == (2, 1)
+        np.testing.assert_allclose(result[IMAGES], -1.0)
+        assert not result[IMAGE_MASKS].any()
+
+    def test_single_array_input_with_num_cameras(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), num_cameras=2)
+        img = np.ones((1, 3, 64, 64), dtype=np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (2, 1, 3, 64, 64)
+        np.testing.assert_allclose(result[IMAGES][0].max(), 1.0, atol=1e-5)
+        np.testing.assert_allclose(result[IMAGES][1], -1.0)
+        assert result[IMAGE_MASKS][0].all()
+        assert not result[IMAGE_MASKS][1].any()
+
+    def test_single_array_input_uses_single_entry_reorder_map(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1}, num_cameras=3)
+        result = prep({IMAGES: np.ones((1, 3, 64, 64), dtype=np.float32)})
+        assert result[IMAGES].shape == (3, 1, 3, 64, 64)
+        np.testing.assert_allclose(result[IMAGES][1].max(), 1.0, atol=1e-5)
+        np.testing.assert_allclose(result[IMAGES][0], -1.0)
+        np.testing.assert_allclose(result[IMAGES][2], -1.0)
+        assert result[IMAGE_MASKS][1].all()
+        assert not result[IMAGE_MASKS][0].any()
+        assert not result[IMAGE_MASKS][2].any()
+
+    def test_single_array_input_with_multi_entry_reorder_map_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1, "wrist": 0}, num_cameras=2)
+        with pytest.raises(ValueError, match="must match the input image keys exactly"):
+            prep({IMAGES: np.ones((1, 3, 64, 64), dtype=np.float32)})
+
+    def test_single_array_input_unaffected_by_defaults(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        img = np.random.rand(2, 3, 32, 32).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 2, 3, 64, 64)
+        assert result[IMAGE_MASKS].shape == (1, 2)
+        assert result[IMAGE_MASKS].all()
