@@ -349,6 +349,9 @@ class MolmoAct2ModelInputs(Preprocessor):
     image_patch_id: int
     image_col_id: int | None
     low_res_image_start_token_id: int | None
+    frame_start_token_id: int | None = None
+    frame_end_token_id: int | None = None
+    image_low_res_id: int | None = None
     image_size: tuple[int, int] = (378, 378)
     patch_size: int = 14
     pooling_size: tuple[int, int] = (2, 2)
@@ -370,6 +373,9 @@ class MolmoAct2ModelInputs(Preprocessor):
             image_end_token_id=self.image_end_token_id,
             image_col_id=self.image_col_id,
             low_res_image_start_token_id=self.low_res_image_start_token_id,
+            frame_start_token_id=self.frame_start_token_id,
+            frame_end_token_id=self.frame_end_token_id,
+            image_low_res_id=self.image_low_res_id,
             image_use_col_tokens=self.image_use_col_tokens,
             use_single_crop_col_tokens=self.use_single_crop_col_tokens,
             use_single_crop_start_token=self.use_single_crop_start_token,

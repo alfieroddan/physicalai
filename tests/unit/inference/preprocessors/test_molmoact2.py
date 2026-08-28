@@ -264,6 +264,9 @@ class TestMolmoAct2ManifestPipeline:
                 image_patch_id=154626,
                 image_col_id=154627,
                 low_res_image_start_token_id=154628,
+                frame_start_token_id=154631,
+                frame_end_token_id=154632,
+                image_low_res_id=154630,
                 image_size=(28, 28),
                 patch_size=14,
                 pooling_size=(2, 2),
@@ -285,6 +288,9 @@ class TestMolmoAct2ManifestPipeline:
 
         model_inputs = instantiate_component(specs[2])
         assert isinstance(model_inputs, MolmoAct2ModelInputs)
+        assert model_inputs._layout.frame_start_token_id == 154631
+        assert model_inputs._layout.frame_end_token_id == 154632
+        assert model_inputs._layout.image_low_res_id == 154630
         values = model_inputs(values)
 
         assert set(values) == {"input_ids", "attention_mask", "images", "token_pooling", "action_dim_is_pad", "token_type_ids"}
