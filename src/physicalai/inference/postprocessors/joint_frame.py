@@ -39,7 +39,7 @@ class JointFramePostprocessor(Postprocessor):
             msg = f"Joint frame postprocessor expected feature {self._feature!r}"
             raise ValueError(msg)
         result = dict(outputs)
-        result[self._feature] = self._transform.to_robot(np.asarray(outputs[self._feature]))
+        result[self._feature] = self._transform.inverse(np.asarray(outputs[self._feature]))
         return result
 
 

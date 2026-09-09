@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class JointFrameTransform:
-    """Map leading joint values between robot and checkpoint calibration frames."""
+    """Apply an invertible affine transform to leading joint values."""
 
     def __init__(self, *, signs: Sequence[float], offsets: Sequence[float]) -> None:
         """Store the joint signs and offsets.
@@ -31,19 +31,19 @@ class JointFrameTransform:
         self._signs = np.asarray(signs, dtype=np.float32)
         self._offsets = np.asarray(offsets, dtype=np.float32)
 
-    def to_checkpoint(self, values: np.ndarray) -> np.ndarray:
-        """Map robot-frame joints to the checkpoint frame.
+    def forward(self, values: np.ndarray) -> np.ndarray:
+        """Apply ``sign * value + offset`` to leading joint values.
 
         Returns:
             A transformed copy of ``values``.
         """
         return self._apply(values, inverse=False)
 
-    def to_robot(self, values: np.ndarray) -> np.ndarray:
-        """Map checkpoint-frame joints back to the robot frame.
+    def inverse(self, values: np.ndarray) -> np.ndarray:
+        """Apply ``sign * (value - offset)`` to leading joint values.
 
         Returns:
-            A transformed copy of ``values``.
+            An inverse-transformed copy of ``values``.
         """
         return self._apply(values, inverse=True)
 

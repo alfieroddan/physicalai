@@ -34,7 +34,7 @@ class JointFramePreprocessor(Preprocessor):
         """
         key = self._resolve_key(inputs)
         outputs = dict(inputs)
-        outputs[key] = self._transform.to_checkpoint(np.asarray(inputs[key]))
+        outputs[key] = self._transform.forward(np.asarray(inputs[key]))
         return outputs
 
     def _resolve_key(self, inputs: dict[str, Any]) -> str:
