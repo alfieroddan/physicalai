@@ -9,6 +9,7 @@ flattens and filters them for the runtime adapter.
 
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.preprocessors.hf_tokenizer import HFTokenizer
+from physicalai.inference.preprocessors.joint_frame import JointFramePreprocessor
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
 from physicalai.inference.preprocessors.molmoact2 import MolmoAct2Preprocessor
 from physicalai.inference.preprocessors.molmoact2_inputs import MolmoAct2ModelInputs
@@ -22,6 +23,7 @@ from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocess
 
 __all__ = [
     "HFTokenizer",
+    "JointFramePreprocessor",
     "LambdaPreprocessor",
     "MolmoAct2ModelInputs",
     "MolmoAct2Preprocessor",

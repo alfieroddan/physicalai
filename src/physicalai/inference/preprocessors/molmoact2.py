@@ -16,9 +16,6 @@ from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
 
-SO101_JOINT_SIGNS = (1.0, -1.0, 1.0, 1.0, 1.0, 1.0)
-SO101_JOINT_OFFSETS = (0.0, 90.0, 90.0, 0.0, 0.0, 0.0)
-
 _TRAILING_PUNCTUATION = ".,!?;:"
 _IMAGE_NDIM = 4
 _RGB_CHANNELS = 3
@@ -93,44 +90,6 @@ def _build_prompt(
     return f"{image_prefix}<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<action_output>"
 
 
-class JointFrameTransform:
-    """Map leading joints between robot and checkpoint frames."""
-
-    def __init__(
-        self,
-        signs: list[float] | None = None,
-        offsets: list[float] | None = None,
-    ) -> None:
-        """Use Studio SO101 defaults unless compatible overrides are supplied.
-
-        Raises:
-            ValueError: If signs and offsets have different lengths.
-        """
-        signs = list(SO101_JOINT_SIGNS) if signs is None else signs
-        offsets = list(SO101_JOINT_OFFSETS) if offsets is None else offsets
-        if len(signs) != len(offsets):
-            msg = f"joint_signs ({len(signs)}) and joint_offsets ({len(offsets)}) must match"
-            raise ValueError(msg)
-        self.signs = np.asarray(signs, dtype=np.float32)
-        self.offsets = np.asarray(offsets, dtype=np.float32)
-
-    def apply(self, values: np.ndarray, *, inverse: bool) -> np.ndarray:
-        """Apply the forward or inverse affine transform.
-
-        Returns:
-            A transformed copy of the input values.
-        """
-        count = min(self.signs.size, values.shape[-1])
-        output = np.array(values, copy=True)
-        joints = values[..., :count]
-        output[..., :count] = (
-            self.signs[:count] * (joints - self.offsets[:count])
-            if inverse
-            else self.signs[:count] * joints + self.offsets[:count]
-        )
-        return output
-
-
 class MolmoAct2Preprocessor(Preprocessor):
     """Prepare normalized prompts and packed images before tokenization."""
 
@@ -146,9 +105,6 @@ class MolmoAct2Preprocessor(Preprocessor):
         control_mode: str = "",
         add_setup_tokens: bool = True,
         add_control_tokens: bool = True,
-        adapt_to_so101: bool = False,
-        joint_signs: list[float] | None = None,
-        joint_offsets: list[float] | None = None,
     ) -> None:
         """Store observation preprocessing settings.
 
@@ -165,7 +121,6 @@ class MolmoAct2Preprocessor(Preprocessor):
         self.control_mode = control_mode
         self.add_setup_tokens = add_setup_tokens
         self.add_control_tokens = add_control_tokens
-        self.joint_transform = JointFrameTransform(joint_signs, joint_offsets) if adapt_to_so101 else None
         self.normalizer = (
             StatsNormalizer(
                 stats={STATE: normalization_stats(state_stats)},
@@ -194,8 +149,6 @@ class MolmoAct2Preprocessor(Preprocessor):
         state = np.asarray(state, dtype=np.float32)
         if state.ndim == 1:
             state = state[None, :]
-        if self.joint_transform is not None:
-            state = self.joint_transform.apply(state, inverse=False)
         if self.normalizer is not None:
             state = self.normalizer({STATE: state})[STATE]
         state = np.clip(state, -1.0, 1.0)
@@ -296,9 +249,6 @@ class MolmoAct2Preprocessor(Preprocessor):
 
 
 __all__ = [
-    "SO101_JOINT_OFFSETS",
-    "SO101_JOINT_SIGNS",
-    "JointFrameTransform",
     "MolmoAct2Preprocessor",
     "normalization_stats",
 ]

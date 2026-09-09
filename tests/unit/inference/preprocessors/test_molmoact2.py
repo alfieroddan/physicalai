@@ -9,7 +9,7 @@ import pytest
 from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 from physicalai.inference.manifest import ComponentSpec
 from physicalai.inference.component_factory import instantiate_component
-from physicalai.inference.preprocessors import MolmoAct2ModelInputs, MolmoAct2Preprocessor
+from physicalai.inference.preprocessors import JointFramePreprocessor, MolmoAct2ModelInputs, MolmoAct2Preprocessor
 from physicalai.inference.preprocessors.molmoact2_inputs import (
     MolmoAct2InputConfig,
     build_batched_images,
@@ -99,20 +99,25 @@ class TestMolmoAct2Preprocessor:
         assert float(result[IMAGES][0].max()) == 0.0
         assert float(result[IMAGES][1].min()) == 1.0
 
-    def test_applies_masked_normalization_and_joint_transform(self) -> None:
+    def test_applies_masked_normalization_after_joint_transform(self) -> None:
+        joint_transform = JointFramePreprocessor(
+            feature=STATE,
+            signs=[1.0, -1.0],
+            offsets=[0.0, 2.0],
+        )
         processor = MolmoAct2Preprocessor(
             image_keys=[],
             image_size=(28, 28),
             state_stats={"q01": [0.0, 0.0], "q99": [2.0, 2.0], "mask": [True, False]},
-            adapt_to_so101=True,
-            joint_signs=[1.0, -1.0],
-            joint_offsets=[0.0, 2.0],
         )
-        result = processor({
+        inputs = {
             STATE: np.array([[1.0, 1.0]], dtype=np.float32),
             TASK: "move",
             IMAGES: np.zeros((1, 3, 28, 28), dtype=np.uint8),
-        })
+        }
+
+        result = processor(joint_transform(inputs))
+
         assert "<state_128><state_255>" in result[TASK][0]
 
     def test_supports_mean_std_normalization(self) -> None:

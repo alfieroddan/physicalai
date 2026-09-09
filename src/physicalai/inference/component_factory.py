@@ -114,11 +114,13 @@ component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
 component_registry.register("to_float_tensor", "physicalai.inference.preprocessors.ToFloatTensorPreprocessor")
 component_registry.register("molmoact2_pre", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
+component_registry.register("joint_frame_preprocess", "physicalai.inference.preprocessors.JointFramePreprocessor")
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
 component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
 component_registry.register("molmoact2_postprocess", "physicalai.inference.postprocessors.MolmoAct2Postprocessor")
+component_registry.register("joint_frame_postprocess", "physicalai.inference.postprocessors.JointFramePostprocessor")
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
