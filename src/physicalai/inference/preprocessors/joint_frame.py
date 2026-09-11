@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from typing_extensions import override
 
-from physicalai.inference.joint_transform import JointFrameTransform
+from physicalai.inference.postprocessors.joint_frame import JointFrameTransform
 from physicalai.inference.preprocessors.base import Preprocessor
 
 if TYPE_CHECKING:
