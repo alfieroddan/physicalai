@@ -15,6 +15,7 @@ from physicalai.inference.postprocessors import JointFramePostprocessor, MolmoAc
 class TestMolmoAct2Postprocessor:
     def test_clamps_and_masked_denormalizes_before_joint_transform(self) -> None:
         processor = MolmoAct2Postprocessor(
+            action_key="actions",
             action_stats={
                 "q01": [0.0, 0.0, 0.0],
                 "q99": [2.0, 2.0, 2.0],
@@ -33,14 +34,26 @@ class TestMolmoAct2Postprocessor:
         assert "actions" not in result
 
     def test_identity_without_stats(self) -> None:
-        processor = MolmoAct2Postprocessor()
+        processor = MolmoAct2Postprocessor(action_key=ACTION)
         result = processor({ACTION: np.array([[-0.5, 0.5]], dtype=np.float32)})
         np.testing.assert_array_equal(result[ACTION], [[-0.5, 0.5]])
 
     def test_missing_action_raises(self) -> None:
-        with pytest.raises(ValueError, match="action tensor"):
-            MolmoAct2Postprocessor()({"other": np.zeros(1)})
+        with pytest.raises(ValueError, match="expected action key 'model_actions'"):
+            MolmoAct2Postprocessor(action_key="model_actions")({"other": np.zeros(1)})
 
-    def test_registry_alias_instantiates(self) -> None:
-        processor = instantiate_component(ComponentSpec(type="molmoact2_postprocess"))
+    def test_registry_alias_uses_manifest_action_key(self) -> None:
+        processor = instantiate_component(
+            ComponentSpec(type="molmoact2_postprocess", action_key="model_actions"),
+        )
+
         assert isinstance(processor, MolmoAct2Postprocessor)
+        result = processor(
+            {
+                "model_actions": np.array([[-0.5, 0.5]], dtype=np.float32),
+                "other": np.ones(1),
+            },
+        )
+        np.testing.assert_array_equal(result[ACTION], [[-0.5, 0.5]])
+        np.testing.assert_array_equal(result["other"], np.ones(1))
+        assert "model_actions" not in result

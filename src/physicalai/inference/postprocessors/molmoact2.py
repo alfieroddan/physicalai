@@ -22,10 +22,18 @@ class MolmoAct2Postprocessor(Postprocessor):
     def __init__(
         self,
         *,
+        action_key: str,
         action_stats: dict[str, Any] | None = None,
         normalization_mode: str = "QUANTILES",
     ) -> None:
-        """Store action postprocessing settings."""
+        """Store action postprocessing settings.
+
+        Args:
+            action_key: Adapter output key containing the action tensor.
+            action_stats: Statistics used to denormalize actions.
+            normalization_mode: Normalization strategy used during training.
+        """
+        self._action_key = action_key
         self.denormalizer = (
             StatsDenormalizer(
                 stats={ACTION: normalization_stats(action_stats)},
@@ -44,17 +52,16 @@ class MolmoAct2Postprocessor(Postprocessor):
             Outputs with the canonical denormalized action.
 
         Raises:
-            ValueError: If no action output is present.
+            ValueError: If the configured action output is absent.
         """
         result = dict(outputs)
-        action = result.get(ACTION, result.get("actions"))
-        if action is None:
-            msg = "MolmoAct2 postprocessor expected an action tensor"
+        if self._action_key not in result:
+            msg = f"MolmoAct2 postprocessor expected action key {self._action_key!r}"
             raise ValueError(msg)
+        action = result.pop(self._action_key)
         action = np.clip(np.asarray(action), -1.0, 1.0)
         if self.denormalizer is not None:
             action = self.denormalizer({ACTION: action})[ACTION]
-        result.pop("actions", None)
         result[ACTION] = action
         return result
 

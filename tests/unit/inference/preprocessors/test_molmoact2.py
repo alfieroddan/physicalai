@@ -305,6 +305,7 @@ class TestMolmoAct2ManifestPipeline:
         postprocessor = instantiate_component(
             ComponentSpec(
                 type="molmoact2_postprocess",
+                action_key="action",
                 action_stats={"q01": [0.0, 0.0], "q99": [2.0, 2.0]},
             ),
         )
