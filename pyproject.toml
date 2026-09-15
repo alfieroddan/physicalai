@@ -2,6 +2,14 @@
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/physicalai-lerobot-plugin"]
+
+[tool.uv.sources]
+physicalai = { workspace = true }
+physicalai-studio-plugin = { workspace = true }
+
 [project]
 name = "physicalai"
 dynamic = ["version"]
@@ -27,7 +35,7 @@ dependencies = [
     "pyyaml>=6.0",
     "opencv-python-headless",
     "huggingface_hub>=0.34,<2.0",
-    "transformers>=5.5.0,<5.6.0",
+    "transformers>=5.15.1,<5.16.0",
     "num2words>=0.5.14,<0.6.0",
     "safetensors>=0.4.3,<1.0.0",
     "onnxruntime",
@@ -79,6 +87,8 @@ docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
 
 [tool.hatch.version]
 source = "vcs"
+tag-pattern = '^v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match v*" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -104,8 +114,16 @@ include = [
 
 [tool.pyrefly]
 python-version = "3.11"
-search-path = ["src"]
-project-includes = ["src", "tests"]
+search-path = [
+    "src",
+    "packages/physicalai-studio-plugin/src",
+]
+project-includes = [
+    "src",
+    "tests",
+    "packages/physicalai-studio-plugin/src",
+    "packages/physicalai-studio-plugin/tests",
+]
 ignore-missing-imports = ["*"]
 
 [tool.mypy]
@@ -121,7 +139,7 @@ default-groups = ["dev"]
 target-version = "py311"
 line-length = 120
 preview = true
-include = ["src/**/*.py", "src/**/*.pyi"]
+include = ["src/**/*.py", "src/**/*.pyi", "packages/**/src/**/*.py", "packages/**/src/**/*.pyi"]
 exclude = [
     ".bzr",
     ".direnv",

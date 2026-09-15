@@ -112,6 +112,9 @@ component_registry.register("molmoact2", "physicalai.inference.preprocessors.Mol
 component_registry.register("molmoact2_inputs", "physicalai.inference.preprocessors.MolmoAct2ModelInputs")
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
+component_registry.register("rldx1", "physicalai.inference.preprocessors.Rldx1Preprocessor")
+component_registry.register("rldx1_token_composer", "physicalai.inference.preprocessors.Rldx1TokenComposer")
+component_registry.register("rldx1_rope", "physicalai.inference.preprocessors.Rldx1RopePreprocessor")
 component_registry.register("to_float_tensor", "physicalai.inference.preprocessors.ToFloatTensorPreprocessor")
 component_registry.register("molmoact2_pre", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
 component_registry.register("joint_frame_preprocess", "physicalai.inference.preprocessors.JointFramePreprocessor")
@@ -121,6 +124,12 @@ component_registry.register("denormalize", "physicalai.inference.postprocessors.
 component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
 component_registry.register("molmoact2_postprocess", "physicalai.inference.postprocessors.MolmoAct2Postprocessor")
 component_registry.register("joint_frame_postprocess", "physicalai.inference.postprocessors.JointFramePostprocessor")
+
+# Callbacks
+component_registry.register("latency_monitor", "physicalai.inference.callbacks.LatencyMonitor")
+component_registry.register("rtc_latency", "physicalai.inference.callbacks.RTCLatencyTracker")
+component_registry.register("rldx1_vtc", "physicalai.inference.callbacks.Rldx1VtcWindowCallback")
+component_registry.register("throughput_monitor", "physicalai.inference.callbacks.ThroughputMonitor")
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
