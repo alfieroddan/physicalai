@@ -6,17 +6,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from physicalai.inference.component_factory import instantiate_component
 from physicalai.inference.constants import IMAGES, STATE, TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 from physicalai.inference.manifest import ComponentSpec
-from physicalai.inference.component_factory import instantiate_component
+from physicalai.inference.postprocessors import MolmoAct2Postprocessor
 from physicalai.inference.preprocessors import JointFramePreprocessor, MolmoAct2ModelInputs, MolmoAct2Preprocessor
-from physicalai.inference.preprocessors.molmoact2_inputs import (
+from physicalai.inference.preprocessors.molmoact2.image import MolmoAct2ImageProcessor
+from physicalai.inference.preprocessors.molmoact2.inputs import (
     MolmoAct2InputConfig,
     build_batched_images,
     expand_image_placeholders,
 )
-from physicalai.inference.preprocessors.molmoact2_image import MolmoAct2ImageProcessor
-from physicalai.inference.postprocessors import MolmoAct2Postprocessor
 
 
 def _prepare(**kwargs) -> MolmoAct2Preprocessor:

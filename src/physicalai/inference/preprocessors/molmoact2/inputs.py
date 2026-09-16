@@ -21,7 +21,7 @@ from typing_extensions import override
 from physicalai.inference.constants import IMAGES, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 from physicalai.inference.preprocessors.base import Preprocessor
 
-from .molmoact2_image import MolmoAct2ImageProcessor
+from .image import MolmoAct2ImageProcessor
 
 _PACKED_IMAGE_NDIM = 5
 
