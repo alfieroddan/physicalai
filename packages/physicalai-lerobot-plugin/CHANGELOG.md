@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/alfieroddan/physicalai/compare/physicalai-lerobot-plugin-v0.4.0...physicalai-lerobot-plugin-v0.5.0) (2026-09-17)
+
+
+### ✨ Features
+
+* add `physicalai-lerobot-plugin` ([#265](https://github.com/alfieroddan/physicalai/issues/265)) ([4ec496b](https://github.com/alfieroddan/physicalai/commit/4ec496b6067c101b8ac50beca65a25a89b6c4a9a))
+
+
+### 🔧 Chores
+
+* **main:** release physicalai-lerobot-plugin 0.4.0 ([#280](https://github.com/alfieroddan/physicalai/issues/280)) ([04f067a](https://github.com/alfieroddan/physicalai/commit/04f067af8cc9e79723c486d86e2c73a0bf16fff4))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.3.1...physicalai-lerobot-plugin-v0.4.0) (2026-09-15)
 
 
