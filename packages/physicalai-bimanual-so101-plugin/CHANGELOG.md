@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/alfieroddan/physicalai/compare/physicalai-bimanual-so101-plugin-v0.5.0...physicalai-bimanual-so101-plugin-v0.6.0) (2026-09-23)
+
+
+### ✨ Features
+
+* add first party robot plugins ([#263](https://github.com/alfieroddan/physicalai/issues/263)) ([41e3ecf](https://github.com/alfieroddan/physicalai/commit/41e3ecf5e8d7a1c91d14234fceb0d040e2c7e07b))
+
+
+### 🔧 Chores
+
+* **main:** release physicalai-bimanual-so101-plugin 0.5.0 ([#278](https://github.com/alfieroddan/physicalai/issues/278)) ([3746e6b](https://github.com/alfieroddan/physicalai/commit/3746e6baeaede30bcfe38681dafebf562eb612df))
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-bimanual-so101-plugin-v0.4.0...physicalai-bimanual-so101-plugin-v0.5.0) (2026-09-15)
 
 
