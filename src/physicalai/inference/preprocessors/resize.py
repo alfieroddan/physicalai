@@ -13,6 +13,7 @@ import numpy as np
 from physicalai.inference.constants import IMAGES
 
 from .base import Preprocessor
+from .image_layout import ImageLayout, infer_image_layout
 
 
 class ResizeMode(StrEnum):
@@ -27,6 +28,10 @@ class ResizePreprocessor(Preprocessor):
 
     Args:
         image_resolution: Target (height, width) for images.
+        image_layout: Input axis order, ``BCHW`` or ``BHWC``. When specified,
+            all images must use this layout and have 1 to 4 channels.
+            Defaults to ``None``, which infers
+            the layout of each image array using the legacy heuristic.
         mode: Resize strategy.
             - ``stretch`` distorts to exact target size without padding.
             - ``letterbox`` preserves aspect ratio and pads to exact target.
@@ -37,12 +42,14 @@ class ResizePreprocessor(Preprocessor):
         self,
         image_resolution: tuple[int, int],
         *,
+        image_layout: ImageLayout | str | None = None,
         mode: ResizeMode | str = ResizeMode.LETTERBOX,
         pad_value: float = 0,
     ) -> None:
-        """Initialize the resize preprocessor."""
+        """Initialize the resize preprocessor with validated layout and mode."""
         super().__init__()
         self._image_resolution = image_resolution
+        self._image_layout = ImageLayout(image_layout) if image_layout is not None else None
         self._mode = ResizeMode(mode)
         self._pad_value = pad_value
 
@@ -57,7 +64,8 @@ class ResizePreprocessor(Preprocessor):
         keys. ``is_pad`` keys are left untouched.
 
         Image arrays may be in channels-first ``(batch, channels, height,
-        width)`` or channels-last ``(batch, height, width, channels)`` layout,
+        width)`` or channels-last ``(batch, height, width, channels)`` layout
+        as specified by ``image_layout`` or inferred when it is ``None``,
         with ``uint8`` (normalized to ``float32`` in [0, 1]) or floating-point
         values. The output is always in channels-first layout and ``float32``.
 
@@ -83,7 +91,24 @@ class ResizePreprocessor(Preprocessor):
 
         return outputs
 
-    def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0912, PLR0914
+    def _validate_channel_count(self, shape: tuple[int, ...]) -> None:
+        """Validate explicit layouts while preserving legacy automatic detection.
+
+        Raises:
+            ValueError: If an explicit layout has a channel count outside 1 to 4.
+        """
+        if self._image_layout is None:
+            return
+        channel_axis = 1 if self._image_layout == ImageLayout.BCHW else -1
+        channels = shape[channel_axis]
+        if channels not in {1, 2, 3, 4}:
+            msg = (
+                f"Expected 1 to 4 channels for image_layout={self._image_layout.value}, "
+                f"but got {channels} channels in shape {shape}; check image_layout"
+            )
+            raise ValueError(msg)
+
+    def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0914
         """Resize an image array to the target resolution.
 
                 Behavior depends on the configured ``mode``:
@@ -98,7 +123,7 @@ class ResizePreprocessor(Preprocessor):
         and ``fp32``.
 
         Args:
-            img: Input image array in channels-first or channels-last layout.
+            img: Input image array in the configured or automatically inferred layout.
 
         Returns:
             Resized image array in channels-first layout.
@@ -107,12 +132,16 @@ class ResizePreprocessor(Preprocessor):
             ValueError: If the input array does not have 4 dimensions, or if it
                 has an unsupported dtype (not ``uint8`` or floating point),
                 or if the ``pad_value`` is out of range for ``uint8`` inputs,
-                or if the input image has a zero spatial dimension.
+                or if the input image has a zero spatial dimension,
+                or if automatic layout detection is ambiguous,
+                or if an explicit layout has a channel count outside 1 to 4.
         """
         img_dim = 4
         if img.ndim != img_dim:
-            msg = f"(B,C,H,W) expected, but {img.shape}"
+            msg = f"4D image expected, but got shape {img.shape}"
             raise ValueError(msg)
+
+        self._validate_channel_count(img.shape)
 
         if img.dtype == np.uint8 and self._pad_value > np.iinfo(np.uint8).max:
             msg = f"pad_value {self._pad_value} is out of range for uint8 inputs"
@@ -124,15 +153,7 @@ class ResizePreprocessor(Preprocessor):
             msg = f"Unsupported image dtype: {img.dtype}"
             raise ValueError(msg)
 
-        # Heuristic: standard channel counts are {1, 2, 3, 4}; spatial dims are typically larger.
-        if img.shape[-1] in {1, 2, 3, 4} and img.shape[1] in {1, 2, 3, 4}:
-            msg = (
-                f"ambiguous layout: both dim 1 ({img.shape[1]}) and dim -1 ({img.shape[-1]}) "
-                "look like standard channel counts; provide input with spatial dims > 4"
-            )
-            raise ValueError(msg)
-        channels_last = img.shape[-1] in {1, 2, 3, 4} and img.shape[1] not in {1, 2, 3, 4}
-        if not channels_last:
+        if (self._image_layout or infer_image_layout(img.shape)) == ImageLayout.BCHW:
             img = np.transpose(img, (0, 2, 3, 1))  # (B, C, H, W) -> (B, H, W, C)
 
         target_height, target_width = self._image_resolution
