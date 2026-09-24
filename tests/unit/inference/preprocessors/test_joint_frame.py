@@ -60,3 +60,9 @@ def test_preprocessor_rejects_missing_feature() -> None:
 
     with pytest.raises(ValueError, match="expected feature 'state'"):
         processor({})
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan"), float("inf")])
+def test_preprocessor_rejects_non_finite_or_non_positive_scales(scale: float) -> None:
+    with pytest.raises(ValueError, match="scales must be finite and positive"):
+        JointFramePreprocessor(feature="state", signs=[1.0], offsets=[0.0], scales=[scale])

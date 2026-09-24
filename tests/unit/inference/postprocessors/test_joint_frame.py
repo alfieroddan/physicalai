@@ -42,8 +42,12 @@ def test_joint_transform_round_trip_applies_scales() -> None:
 def test_joint_transform_rejects_invalid_scales() -> None:
     with pytest.raises(ValueError, match=re.escape("signs (2), offsets (2) and scales (1) must match")):
         JointFrameTransform(signs=(1.0, 1.0), offsets=(0.0, 0.0), scales=(1.0,))
-    with pytest.raises(ValueError, match="scales must be positive"):
-        JointFrameTransform(signs=(1.0,), offsets=(0.0,), scales=(0.0,))
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan"), float("inf")])
+def test_joint_transform_rejects_non_finite_or_non_positive_scales(scale: float) -> None:
+    with pytest.raises(ValueError, match="scales must be finite and positive"):
+        JointFrameTransform(signs=(1.0,), offsets=(0.0,), scales=(scale,))
 
 
 def test_postprocessor_transforms_configured_feature() -> None:
@@ -89,3 +93,9 @@ def test_postprocessor_rejects_missing_feature() -> None:
 
     with pytest.raises(ValueError, match="expected feature 'action'"):
         processor({})
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan"), float("inf")])
+def test_postprocessor_rejects_non_finite_or_non_positive_scales(scale: float) -> None:
+    with pytest.raises(ValueError, match="scales must be finite and positive"):
+        JointFramePostprocessor(feature="action", signs=[1.0], offsets=[0.0], scales=[scale])
