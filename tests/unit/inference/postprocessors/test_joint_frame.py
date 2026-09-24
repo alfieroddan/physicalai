@@ -27,6 +27,23 @@ def test_joint_transform_rejects_invalid_frame() -> None:
         JointFrameTransform(signs=(2.0,), offsets=(0.0,))
 
 
+def test_joint_transform_round_trip_applies_scales() -> None:
+    transform = JointFrameTransform(signs=(1.0, -1.0), offsets=(10.0, 20.0), scales=(2.0, 0.5))
+    robot_values = np.array([[2.0, 4.0, 5.0]], dtype=np.float32)
+
+    checkpoint_values = transform.forward(robot_values)
+
+    np.testing.assert_allclose(checkpoint_values, [[14.0, 18.0, 5.0]])
+    np.testing.assert_allclose(transform.inverse(checkpoint_values), robot_values)
+
+
+def test_joint_transform_rejects_invalid_scales() -> None:
+    with pytest.raises(ValueError, match="must match"):
+        JointFrameTransform(signs=(1.0, 1.0), offsets=(0.0, 0.0), scales=(1.0,))
+    with pytest.raises(ValueError, match="must be positive"):
+        JointFrameTransform(signs=(1.0,), offsets=(0.0,), scales=(0.0,))
+
+
 def test_postprocessor_transforms_configured_feature() -> None:
     processor = instantiate_component(
         ComponentSpec(
@@ -46,6 +63,22 @@ def test_postprocessor_transforms_configured_feature() -> None:
     np.testing.assert_array_equal(result["action"], [[2.0, 3.0, 4.0]])
     np.testing.assert_array_equal(result["other"], outputs["other"])
     np.testing.assert_array_equal(outputs["action"], [[12.0, 17.0, 4.0]])
+
+
+def test_postprocessor_applies_configured_scales() -> None:
+    processor = instantiate_component(
+        ComponentSpec(
+            type="joint_frame_postprocess",
+            feature="action",
+            signs=[1.0, -1.0],
+            offsets=[10.0, 20.0],
+            scales=[2.0, 0.5],
+        )
+    )
+
+    result = processor({"action": np.array([[14.0, 18.0, 5.0]], dtype=np.float32)})
+
+    np.testing.assert_allclose(result["action"], [[2.0, 4.0, 5.0]])
 
 
 def test_postprocessor_rejects_missing_feature() -> None:

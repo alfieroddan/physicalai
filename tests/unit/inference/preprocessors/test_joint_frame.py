@@ -30,6 +30,22 @@ def test_preprocessor_transforms_configured_feature() -> None:
     np.testing.assert_array_equal(inputs["state"], [[2.0, 3.0, 4.0]])
 
 
+def test_preprocessor_applies_configured_scales() -> None:
+    processor = instantiate_component(
+        ComponentSpec(
+            type="joint_frame_preprocess",
+            feature="state",
+            signs=[1.0, -1.0],
+            offsets=[10.0, 20.0],
+            scales=[2.0, 0.5],
+        )
+    )
+
+    result = processor({"state": np.array([[2.0, 4.0, 5.0]], dtype=np.float32)})
+
+    np.testing.assert_allclose(result["state"], [[14.0, 18.0, 5.0]])
+
+
 def test_preprocessor_accepts_observation_prefixed_feature() -> None:
     processor = JointFramePreprocessor(feature="state", signs=[-1.0], offsets=[2.0])
 
