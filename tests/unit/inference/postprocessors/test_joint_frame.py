@@ -1,6 +1,8 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import re
+
 import numpy as np
 import pytest
 
@@ -21,7 +23,7 @@ def test_joint_transform_round_trip_uses_supplied_frame() -> None:
 
 
 def test_joint_transform_rejects_invalid_frame() -> None:
-    with pytest.raises(ValueError, match="must match"):
+    with pytest.raises(ValueError, match=re.escape("signs (1), offsets (2) and scales (1) must match")):
         JointFrameTransform(signs=(1.0,), offsets=(0.0, 1.0))
     with pytest.raises(ValueError, match="either -1 or 1"):
         JointFrameTransform(signs=(2.0,), offsets=(0.0,))
@@ -38,9 +40,9 @@ def test_joint_transform_round_trip_applies_scales() -> None:
 
 
 def test_joint_transform_rejects_invalid_scales() -> None:
-    with pytest.raises(ValueError, match="must match"):
+    with pytest.raises(ValueError, match=re.escape("signs (2), offsets (2) and scales (1) must match")):
         JointFrameTransform(signs=(1.0, 1.0), offsets=(0.0, 0.0), scales=(1.0,))
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="scales must be positive"):
         JointFrameTransform(signs=(1.0,), offsets=(0.0,), scales=(0.0,))
 
 
