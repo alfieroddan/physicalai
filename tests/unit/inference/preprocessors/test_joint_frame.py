@@ -41,6 +41,7 @@ def test_preprocessor_applies_configured_scales() -> None:
         )
     )
 
+    assert isinstance(processor, JointFramePreprocessor)
     result = processor({"state": np.array([[2.0, 4.0, 5.0]], dtype=np.float32)})
 
     np.testing.assert_allclose(result["state"], [[14.0, 18.0, 5.0]])

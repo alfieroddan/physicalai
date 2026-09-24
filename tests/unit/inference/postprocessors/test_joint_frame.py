@@ -76,6 +76,7 @@ def test_postprocessor_applies_configured_scales() -> None:
         )
     )
 
+    assert isinstance(processor, JointFramePostprocessor)
     result = processor({"action": np.array([[14.0, 18.0, 5.0]], dtype=np.float32)})
 
     np.testing.assert_allclose(result["action"], [[2.0, 4.0, 5.0]])
