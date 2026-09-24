@@ -48,12 +48,13 @@ class JointFrameTransform:
         if any(sign not in {-1.0, 1.0} for sign in signs):
             msg = "Joint frame transform signs must be either -1 or 1."
             raise ValueError(msg)
-        if any(scale <= 0 for scale in scales):
-            msg = "Joint frame transform scales must be positive."
+        scales_array = np.asarray(scales, dtype=np.float32)
+        if not np.all(np.isfinite(scales_array)) or np.any(scales_array <= 0):
+            msg = "Joint frame transform scales must be finite and positive."
             raise ValueError(msg)
         self._signs = np.asarray(signs, dtype=np.float32)
         self._offsets = np.asarray(offsets, dtype=np.float32)
-        self._scales = np.asarray(scales, dtype=np.float32)
+        self._scales = scales_array
 
     def forward(self, values: np.ndarray) -> np.ndarray:
         """Apply ``sign * scale * value + offset`` to leading joint values.
