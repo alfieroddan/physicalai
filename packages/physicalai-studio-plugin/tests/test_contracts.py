@@ -11,6 +11,7 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
+    RobotCalibration,
     RobotCatalogDefinition,
     RobotProbe,
     SerialPortInfo,
@@ -101,6 +102,42 @@ def test_definition_creation() -> None:
     assert definition.type == "Test_Follower"
     assert definition.robot_payload is TestPayload
     assert definition.probe is probe
+
+
+async def _noop_calibration_step(robot: object) -> None:
+    _ = robot
+
+
+def test_definition_defaults_to_no_calibration() -> None:
+    definition = RobotCatalogDefinition(type="Test_Follower", display_name="Test Follower", role="follower")
+
+    assert definition.calibration is None
+
+
+def test_definition_accepts_calibration() -> None:
+    calibration = RobotCalibration(instructions="Move to the rest pose.", set_zero=_noop_calibration_step)
+    definition = RobotCatalogDefinition(
+        type="Test_Follower", display_name="Test Follower", role="follower", calibration=calibration
+    )
+
+    assert definition.calibration is calibration
+    assert calibration.release is None
+    assert calibration.zero_tolerance_deg == 5.0
+
+
+@pytest.mark.parametrize(
+    ("instructions", "zero_tolerance_deg", "message"),
+    [
+        ("  ", 5.0, "instructions must not be empty"),
+        ("Move to the rest pose.", 0.0, "zero_tolerance_deg must be a finite positive value"),
+        ("Move to the rest pose.", float("nan"), "zero_tolerance_deg must be a finite positive value"),
+    ],
+)
+def test_calibration_rejects_invalid_values(instructions: str, zero_tolerance_deg: float, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        RobotCalibration(
+            instructions=instructions, set_zero=_noop_calibration_step, zero_tolerance_deg=zero_tolerance_deg
+        )
 
 
 def test_generic_payload_linked_to_probe() -> None:
