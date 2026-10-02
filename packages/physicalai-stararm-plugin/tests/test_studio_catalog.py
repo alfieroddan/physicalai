@@ -274,3 +274,38 @@ async def test_build_stararm_102_fl_port_not_found() -> None:
     factory = _StubFactory(port=None)
     with pytest.raises(RuntimeError, match="Robot not found"):
         await _build_stararm_102_fl_driver(robot, cast(Any, factory))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("robot_type", ["StarArm_102_LD_Leader", "StarArm_102_HD_Leader"])
+async def test_leader_calibration_sets_zero_without_release(robot_type: str) -> None:
+    from unittest.mock import MagicMock
+
+    from physicalai_stararm_plugin import StarArm102HDLeader
+    from physicalai_stararm_plugin.studio_catalog import _definitions
+
+    calibration = next(d for d in _definitions() if d.type == robot_type).calibration
+    assert calibration is not None
+    assert calibration.release is None
+    robot = MagicMock(spec=StarArm102HDLeader)
+
+    await calibration.set_zero(robot)
+
+    robot.set_zero_position.assert_called_once_with()
+
+
+@pytest.mark.anyio
+async def test_leader_calibration_rejects_other_drivers() -> None:
+    from physicalai_stararm_plugin.studio_catalog import _definitions
+
+    calibration = next(d for d in _definitions() if d.type == "StarArm_102_HD_Leader").calibration
+    assert calibration is not None
+
+    with pytest.raises(TypeError, match="expects a StarArm102HDLeader"):
+        await calibration.set_zero(cast(Any, object()))
+
+
+def test_fl_follower_has_no_calibration() -> None:
+    from physicalai_stararm_plugin.studio_catalog import _definitions
+
+    assert next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower").calibration is None

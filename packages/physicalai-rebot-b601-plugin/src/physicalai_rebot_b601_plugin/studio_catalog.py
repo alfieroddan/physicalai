@@ -9,6 +9,7 @@ for the ``physicalai.studio.catalog_plugins`` group.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
@@ -19,6 +20,7 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
+    RobotCalibration,
     RobotCatalogDefinition,
     RobotProbe,
     SerialPortInfo,
@@ -371,6 +373,31 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
     )
 
 
+def _require_rs(robot: PhysicalAIRobot) -> ReBotB601RS:
+    if not isinstance(robot, ReBotB601RS):
+        msg = f"ReBot B601 RS calibration expects a ReBotB601RS, got {type(robot).__name__}"
+        raise TypeError(msg)
+    return robot
+
+
+async def _release_rs(robot: PhysicalAIRobot) -> None:
+    await asyncio.to_thread(_require_rs(robot).disable_torque)
+
+
+async def _set_rs_zero(robot: PhysicalAIRobot) -> None:
+    await asyncio.to_thread(_require_rs(robot).set_zero_position)
+
+
+_REBOT_B601_RS_CALIBRATION = RobotCalibration(
+    instructions=(
+        "Motor torque is off, so the arm can be moved by hand. Move it into its zero pose: the folded rest "
+        "pose it sits in when powered off, with the gripper fully closed. Hold it still, then set zero."
+    ),
+    release=_release_rs,
+    set_zero=_set_rs_zero,
+)
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -392,6 +419,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_RS_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
+            calibration=_REBOT_B601_RS_CALIBRATION,
         ),
     ]
 

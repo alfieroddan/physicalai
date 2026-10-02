@@ -227,6 +227,16 @@ class StarArm102HDLeader:
             if self._reset_multi_turn_on_connect:
                 bus.reset_multi_turn(servo_id)
 
+    def set_zero_position(self) -> None:
+        """Store the arm's current pose as every servo's origin."""
+        bus = self._require_bus()
+        for name in self.JOINT_ORDER:
+            servo_id = STAR_ARM_102_JOINT_IDS[name]
+            bus.set_origin_point(servo_id)
+            if self._reset_multi_turn_on_connect:
+                bus.reset_multi_turn(servo_id)
+        self._reset_samples()
+
     def get_observation(self) -> RobotObservation:
         """Read joint positions from all servos.
 
