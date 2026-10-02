@@ -148,8 +148,9 @@ class ReBotB601RS:
             gripper_mit_torque_limit: Maximum torque (N·m) for gripper impedance while moving.
             gripper_mit_hold_torque_limit: Maximum gripper torque (N·m) once it stalls, e.g. on a grasped
                 object.
-            max_relative_target: Optional maximum allowed change (degrees) between the current and
-                commanded position per step; limits how far the arm lunges on a single command.
+            max_relative_target: Optional maximum allowed change (joint degrees, i.e. the action frame)
+                between the current and commanded position per step; limits how far the arm lunges on a
+                single command.
 
         Raises:
             ValueError: If any parameter has an invalid value.
@@ -160,8 +161,9 @@ class ReBotB601RS:
         if can_adapter not in VALID_RS_CAN_ADAPTERS:
             msg = f"Invalid can_adapter {can_adapter!r}. Must be one of {sorted(VALID_RS_CAN_ADAPTERS)}."
             raise ValueError(msg)
-        if min(gripper_mit_kp, gripper_mit_kd, gripper_mit_torque_limit, gripper_mit_hold_torque_limit) < 0.0:
-            msg = "gripper MIT gains and torque limits must be non-negative."
+        gripper_values = (gripper_mit_kp, gripper_mit_kd, gripper_mit_torque_limit, gripper_mit_hold_torque_limit)
+        if not all(math.isfinite(value) and value >= 0.0 for value in gripper_values):
+            msg = "gripper MIT gains and torque limits must be non-negative finite values."
             raise ValueError(msg)
         if max_relative_target is not None and (not math.isfinite(max_relative_target) or max_relative_target <= 0.0):
             msg = f"max_relative_target must be a finite positive value, got {max_relative_target!r}"
@@ -412,9 +414,11 @@ class ReBotB601RS:
         for i, name in enumerate(self.JOINT_ORDER):
             target_deg = self._map_and_clip_action(name, float(action[i]))
             if present_deg is not None and max_relative_target is not None:
+                # Targets are in the motor frame; scale the action-frame limit to match (gripper is 6x).
+                max_step_deg = max_relative_target * abs(REBOT_B601_RS_JOINT_DIRECTIONS[name])
                 delta = target_deg - present_deg[i]
-                if abs(delta) > max_relative_target:
-                    limited = present_deg[i] + math.copysign(max_relative_target, delta)
+                if abs(delta) > max_step_deg:
+                    limited = present_deg[i] + math.copysign(max_step_deg, delta)
                     min_deg, max_deg = REBOT_B601_RS_JOINT_LIMITS_DEG[name]
                     target_deg = float(np.clip(limited, min_deg, max_deg))
             target_rad = math.radians(target_deg)
