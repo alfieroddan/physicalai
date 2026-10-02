@@ -15,9 +15,9 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
-    RobotCalibration,
     RobotCatalogDefinition,
     RobotProbe,
+    RobotZeroCalibration,
     SerialPortInfo,
     robot_field_ui,
     robot_payload_ui,
@@ -357,7 +357,7 @@ async def _set_leader_zero(robot: PhysicalAIRobot) -> None:
 
 
 # Leaders are unlocked on connect, so they can already be moved by hand and need no release step.
-_STAR_ARM_102_LEADER_CALIBRATION = RobotCalibration(
+_STAR_ARM_102_LEADER_ZERO_CALIBRATION = RobotZeroCalibration(
     instructions=(
         "Move the leader into its zero pose: the same folded rest pose as the follower arm, "
         "with the gripper fully closed. Hold it still, then set zero."
@@ -377,7 +377,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_STAR_ARM_102_LD_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_STAR_ARM_PROBE,
-            calibration=_STAR_ARM_102_LEADER_CALIBRATION,
+            zero_calibration=_STAR_ARM_102_LEADER_ZERO_CALIBRATION,
         ),
         RobotCatalogDefinition(
             type="StarArm_102_HD_Leader",
@@ -388,7 +388,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_STAR_ARM_102_HD_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_STAR_ARM_PROBE,
-            calibration=_STAR_ARM_102_LEADER_CALIBRATION,
+            zero_calibration=_STAR_ARM_102_LEADER_ZERO_CALIBRATION,
         ),
         RobotCatalogDefinition(
             type="StarArm_102_FL_Follower",

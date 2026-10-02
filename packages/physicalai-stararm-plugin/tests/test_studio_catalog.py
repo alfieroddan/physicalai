@@ -284,7 +284,7 @@ async def test_leader_calibration_sets_zero_without_release(robot_type: str) -> 
     from physicalai_stararm_plugin import StarArm102HDLeader
     from physicalai_stararm_plugin.studio_catalog import _definitions
 
-    calibration = next(d for d in _definitions() if d.type == robot_type).calibration
+    calibration = next(d for d in _definitions() if d.type == robot_type).zero_calibration
     assert calibration is not None
     assert calibration.release is None
     robot = MagicMock(spec=StarArm102HDLeader)
@@ -298,14 +298,14 @@ async def test_leader_calibration_sets_zero_without_release(robot_type: str) -> 
 async def test_leader_calibration_rejects_other_drivers() -> None:
     from physicalai_stararm_plugin.studio_catalog import _definitions
 
-    calibration = next(d for d in _definitions() if d.type == "StarArm_102_HD_Leader").calibration
+    calibration = next(d for d in _definitions() if d.type == "StarArm_102_HD_Leader").zero_calibration
     assert calibration is not None
 
     with pytest.raises(TypeError, match="expects a StarArm102HDLeader"):
         await calibration.set_zero(cast(Any, object()))
 
 
-def test_fl_follower_has_no_calibration() -> None:
+def test_fl_follower_has_no_zero_calibration() -> None:
     from physicalai_stararm_plugin.studio_catalog import _definitions
 
-    assert next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower").calibration is None
+    assert next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower").zero_calibration is None

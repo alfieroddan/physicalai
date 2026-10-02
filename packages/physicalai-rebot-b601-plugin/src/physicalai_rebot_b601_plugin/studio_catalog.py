@@ -20,9 +20,9 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
-    RobotCalibration,
     RobotCatalogDefinition,
     RobotProbe,
+    RobotZeroCalibration,
     SerialPortInfo,
     robot_field_ui,
     robot_payload_ui,
@@ -388,7 +388,7 @@ async def _set_rs_zero(robot: PhysicalAIRobot) -> None:
     await asyncio.to_thread(_require_rs(robot).set_zero_position)
 
 
-_REBOT_B601_RS_CALIBRATION = RobotCalibration(
+_REBOT_B601_RS_ZERO_CALIBRATION = RobotZeroCalibration(
     instructions=(
         "Motor torque is off, so the arm can be moved by hand. Move it into its zero pose: the folded rest "
         "pose it sits in when powered off, with the gripper fully closed. Hold it still, then set zero."
@@ -419,7 +419,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_RS_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
-            calibration=_REBOT_B601_RS_CALIBRATION,
+            zero_calibration=_REBOT_B601_RS_ZERO_CALIBRATION,
         ),
     ]
 

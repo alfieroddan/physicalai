@@ -355,7 +355,7 @@ async def test_rs_calibration_releases_torque_then_sets_zero() -> None:
     from physicalai_rebot_b601_plugin import ReBotB601RS
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
-    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").calibration
+    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").zero_calibration
     assert calibration is not None
     assert calibration.release is not None
     robot = MagicMock(spec=ReBotB601RS)
@@ -371,14 +371,14 @@ async def test_rs_calibration_releases_torque_then_sets_zero() -> None:
 async def test_rs_calibration_rejects_other_drivers() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
-    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").calibration
+    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").zero_calibration
     assert calibration is not None
 
     with pytest.raises(TypeError, match="expects a ReBotB601RS"):
         await calibration.set_zero(cast(Any, object()))
 
 
-def test_dm_follower_has_no_calibration() -> None:
+def test_dm_follower_has_no_zero_calibration() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
-    assert next(d for d in _definitions() if d.type == "ReBot_B601_DM_Follower").calibration is None
+    assert next(d for d in _definitions() if d.type == "ReBot_B601_DM_Follower").zero_calibration is None
