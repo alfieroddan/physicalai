@@ -10,6 +10,7 @@ def test_imports() -> None:
         PortScanner,
         RobotAdapterOptions,
         RobotAsset,
+        RobotCalibration,
         RobotCatalogDefinition,
         RobotProbe,
         RobotUiCalibrationItem,
@@ -25,10 +26,11 @@ def test_imports() -> None:
         PortScanner,
         RobotAdapterOptions,
         RobotAsset,
+        RobotCalibration,
         RobotCatalogDefinition,
         RobotProbe,
         RobotUiCalibrationItem,
         SerialPortInfo,
         shared_robot_name,
     )
-    assert len(exports) == 12
+    assert len(exports) == 13
