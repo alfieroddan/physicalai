@@ -186,6 +186,17 @@ class TestStarArm102HDLeaderObservation:
 
         assert robot.get_observation().joint_positions[0] == pytest.approx(120.0)
 
+    def test_disable_torque_unlocks_every_servo(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, unlock_on_connect=False)
+        robot.connect()
+        bus = mock_smart_servo.FashionStarServo.return_value
+        bus.unlock.assert_not_called()
+
+        robot.disable_torque()
+
+        assert bus.unlock.call_args_list == [call(i) for i in range(7)]
+        assert robot.is_holding is False
+
     def test_set_zero_position_sets_origin_and_resets_baseline(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo)
         robot.connect()

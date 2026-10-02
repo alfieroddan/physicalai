@@ -349,19 +349,21 @@ async def _build_stararm_102_ld_driver(
     )
 
 
-async def _set_leader_zero(robot: PhysicalAIRobot) -> None:
-    if not isinstance(robot, StarArm102HDLeader):
-        msg = f"Star Arm leader calibration expects a StarArm102HDLeader, got {type(robot).__name__}"
-        raise TypeError(msg)
+async def _release_leader(robot: StarArm102HDLeader) -> None:
+    # A payload may set unlock_on_connect=False, so unlock explicitly before the user moves the arm.
+    await asyncio.to_thread(robot.disable_torque)
+
+
+async def _set_leader_zero(robot: StarArm102HDLeader) -> None:
     await asyncio.to_thread(robot.set_zero_position)
 
 
-# Leaders are unlocked on connect, so they can already be moved by hand and need no release step.
-_STAR_ARM_102_LEADER_ZERO_CALIBRATION = RobotZeroCalibration(
+_STAR_ARM_102_LEADER_ZERO_CALIBRATION = RobotZeroCalibration[StarArm102HDLeader](
     instructions=(
         "Move the leader into its zero pose: the same folded rest pose as the follower arm, "
         "with the gripper fully closed. Hold it still, then set zero."
     ),
+    release=_release_leader,
     set_zero=_set_leader_zero,
 )
 

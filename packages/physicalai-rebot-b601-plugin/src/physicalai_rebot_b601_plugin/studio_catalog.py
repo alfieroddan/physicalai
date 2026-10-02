@@ -373,22 +373,15 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
     )
 
 
-def _require_rs(robot: PhysicalAIRobot) -> ReBotB601RS:
-    if not isinstance(robot, ReBotB601RS):
-        msg = f"ReBot B601 RS calibration expects a ReBotB601RS, got {type(robot).__name__}"
-        raise TypeError(msg)
-    return robot
+async def _release_rs(robot: ReBotB601RS) -> None:
+    await asyncio.to_thread(robot.disable_torque)
 
 
-async def _release_rs(robot: PhysicalAIRobot) -> None:
-    await asyncio.to_thread(_require_rs(robot).disable_torque)
+async def _set_rs_zero(robot: ReBotB601RS) -> None:
+    await asyncio.to_thread(robot.set_zero_position)
 
 
-async def _set_rs_zero(robot: PhysicalAIRobot) -> None:
-    await asyncio.to_thread(_require_rs(robot).set_zero_position)
-
-
-_REBOT_B601_RS_ZERO_CALIBRATION = RobotZeroCalibration(
+_REBOT_B601_RS_ZERO_CALIBRATION = RobotZeroCalibration[ReBotB601RS](
     instructions=(
         "Motor torque is off, so the arm can be moved by hand. Move it into its zero pose: the folded rest "
         "pose it sits in when powered off, with the gripper fully closed. Hold it still, then set zero."

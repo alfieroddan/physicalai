@@ -227,6 +227,13 @@ class StarArm102HDLeader:
             if self._reset_multi_turn_on_connect:
                 bus.reset_multi_turn(servo_id)
 
+    def disable_torque(self) -> None:
+        """Unlock every servo so the arm can be moved by hand, ending any hold."""
+        bus = self._require_bus()
+        for name in self.JOINT_ORDER:
+            bus.unlock(STAR_ARM_102_JOINT_IDS[name])
+        self._holding = False
+
     def set_zero_position(self) -> None:
         """Store the arm's current pose as every servo's origin."""
         bus = self._require_bus()
