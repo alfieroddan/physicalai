@@ -10,10 +10,10 @@ def test_imports() -> None:
         PortScanner,
         RobotAdapterOptions,
         RobotAsset,
-        RobotZeroCalibration,
         RobotCatalogDefinition,
         RobotProbe,
         RobotUiCalibrationItem,
+        RobotZeroCalibration,
         SerialPortInfo,
         shared_robot_name,
     )
@@ -26,10 +26,10 @@ def test_imports() -> None:
         PortScanner,
         RobotAdapterOptions,
         RobotAsset,
-        RobotZeroCalibration,
         RobotCatalogDefinition,
         RobotProbe,
         RobotUiCalibrationItem,
+        RobotZeroCalibration,
         SerialPortInfo,
         shared_robot_name,
     )

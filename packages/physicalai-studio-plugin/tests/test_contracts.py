@@ -11,9 +11,9 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
-    RobotZeroCalibration,
     RobotCatalogDefinition,
     RobotProbe,
+    RobotZeroCalibration,
     SerialPortInfo,
     robot_field_ui,
     robot_payload_ui,
@@ -123,6 +123,27 @@ def test_definition_accepts_zero_calibration() -> None:
     assert definition.zero_calibration is calibration
     assert calibration.release is None
     assert calibration.zero_tolerance_deg == 5.0
+
+
+def test_zero_calibration_steps_receive_the_concrete_driver() -> None:
+    class _Driver:
+        zeroed = False
+
+        def set_zero_position(self) -> None:
+            self.zeroed = True
+
+    async def set_zero(robot: _Driver) -> None:
+        robot.set_zero_position()
+
+    calibration = RobotZeroCalibration[Any](instructions="Move to the rest pose.", set_zero=set_zero)
+    driver = _Driver()
+
+    async def run() -> None:
+        await calibration.set_zero(driver)
+
+    asyncio.run(run())
+
+    assert driver.zeroed
 
 
 @pytest.mark.parametrize(

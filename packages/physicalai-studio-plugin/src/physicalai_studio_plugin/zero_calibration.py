@@ -7,23 +7,30 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from physicalai.robot.interface import Robot as PhysicalAIRobot
 
+_RobotT = TypeVar("_RobotT", bound="PhysicalAIRobot")
+
 
 @dataclass(frozen=True)
-class RobotZeroCalibration:
+class RobotZeroCalibration(Generic[_RobotT]):
     """Zero-pose calibration steps for a robot type.
 
     Studio runs these on its own exclusive connection to the plain driver
     returned by the catalog builder, before the robot is added. It shows
-    ``instructions`` next to a live 3D view, calls ``release`` so the arm can
-    be moved by hand, calls ``set_zero`` when the user confirms the pose, and
-    then checks that every joint reads within ``zero_tolerance_deg`` of zero.
+    ``instructions`` (next to a live 3D view when the robot type has a
+    ``RobotAsset``), calls ``release`` so the arm can be moved by hand, calls
+    ``set_zero`` when the user confirms the pose, and then checks that every
+    joint reads within ``zero_tolerance_deg`` of zero.
+
+    Parameterize it with the driver class the catalog builder returns, for
+    example ``RobotZeroCalibration[MyRobot]``, so the steps can call that
+    driver's own methods.
 
     Attributes:
         instructions: Plain-text description of the zero pose shown to the user.
@@ -36,8 +43,8 @@ class RobotZeroCalibration:
     """
 
     instructions: str
-    set_zero: Callable[[PhysicalAIRobot], Awaitable[None]]
-    release: Callable[[PhysicalAIRobot], Awaitable[None]] | None = None
+    set_zero: Callable[[_RobotT], Awaitable[None]]
+    release: Callable[[_RobotT], Awaitable[None]] | None = None
     zero_tolerance_deg: float = 5.0
 
     def __post_init__(self) -> None:

@@ -81,7 +81,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
 
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
-    zero_calibration: RobotZeroCalibration | None = None
+    zero_calibration: RobotZeroCalibration[Any] | None = None
 
 
 class RobotCatalogRegistry(Protocol):
