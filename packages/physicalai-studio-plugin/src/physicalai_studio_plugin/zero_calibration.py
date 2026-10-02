@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class RobotCalibration:
+class RobotZeroCalibration:
     """Zero-pose calibration steps for a robot type.
 
     Studio runs these on its own exclusive connection to the plain driver

@@ -4,7 +4,6 @@
 """Public API for the Physical AI Studio plugin."""
 
 from .assets import RobotAsset
-from .calibration import RobotCalibration
 from .catalog import (
     BuildRobotCallable,
     CatalogRobot,
@@ -32,6 +31,7 @@ from .ui_schema import (
     robot_payload_ui,
     validate_robot_payload_ui,
 )
+from .zero_calibration import RobotZeroCalibration
 
 __all__ = [
     "BuildRobotCallable",
@@ -41,7 +41,6 @@ __all__ = [
     "PortScanner",
     "RobotAdapterOptions",
     "RobotAsset",
-    "RobotCalibration",
     "RobotCatalogDefinition",
     "RobotCatalogRegistry",
     "RobotFieldUiOptions",
@@ -55,6 +54,7 @@ __all__ = [
     "RobotUiIpAddressItem",
     "RobotUiItem",
     "RobotUiSectionOptions",
+    "RobotZeroCalibration",
     "SerialPortInfo",
     "robot_field_ui",
     "robot_payload_ui",

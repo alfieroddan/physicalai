@@ -17,8 +17,8 @@ from .factory import CatalogRobotFactory
 
 if TYPE_CHECKING:
     from .assets import RobotAsset
-    from .calibration import RobotCalibration
     from .probe import RobotProbe
+    from .zero_calibration import RobotZeroCalibration
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
 
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
-    calibration: RobotCalibration | None = None
+    zero_calibration: RobotZeroCalibration | None = None
 
 
 class RobotCatalogRegistry(Protocol):
