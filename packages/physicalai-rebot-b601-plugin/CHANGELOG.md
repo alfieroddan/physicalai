@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.0](https://github.com/alfieroddan/physicalai/compare/physicalai-rebot-b601-plugin-v0.7.0...physicalai-rebot-b601-plugin-v0.8.0) (2026-10-02)
+
+
+### ✨ Features
+
+* add first party robot plugins ([#263](https://github.com/alfieroddan/physicalai/issues/263)) ([41e3ecf](https://github.com/alfieroddan/physicalai/commit/41e3ecf5e8d7a1c91d14234fceb0d040e2c7e07b))
+
+
+### 🐛 Bug Fixes
+
+* **rebot-b601:** hold pose correctly and expose MIT gains on the RS driver ([#300](https://github.com/alfieroddan/physicalai/issues/300)) ([cba5932](https://github.com/alfieroddan/physicalai/commit/cba59327df509cf492e02dae11b049eaf5ded54c))
+
+
+### 🔧 Chores
+
+* **main:** release physicalai-rebot-b601-plugin 0.7.0 ([#277](https://github.com/alfieroddan/physicalai/issues/277)) ([3808fe3](https://github.com/alfieroddan/physicalai/commit/3808fe3dbd3dbe0870b0372d624980719ffc411b))
+
 ## [0.7.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.6.0...physicalai-rebot-b601-plugin-v0.7.0) (2026-09-15)
 
 
