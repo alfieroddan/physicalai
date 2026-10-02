@@ -13,6 +13,9 @@ runtime:
     init_args:
       port: can0 # CHANGE_ME: SocketCAN channel
       can_adapter: socketcan
+      # Limit each joint to a 5-degree step per command so a leader/follower
+      # pose mismatch at startup cannot make the arm lunge.
+      max_relative_target: 5.0
 
   action_source:
     class_path: physicalai.runtime.TeleopSource
