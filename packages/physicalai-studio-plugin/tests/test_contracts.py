@@ -11,7 +11,7 @@ from physicalai_studio_plugin import (
     PortScanner,
     RobotAdapterOptions,
     RobotAsset,
-    RobotCalibration,
+    RobotZeroCalibration,
     RobotCatalogDefinition,
     RobotProbe,
     SerialPortInfo,
@@ -108,19 +108,19 @@ async def _noop_calibration_step(robot: object) -> None:
     _ = robot
 
 
-def test_definition_defaults_to_no_calibration() -> None:
+def test_definition_defaults_to_no_zero_calibration() -> None:
     definition = RobotCatalogDefinition(type="Test_Follower", display_name="Test Follower", role="follower")
 
-    assert definition.calibration is None
+    assert definition.zero_calibration is None
 
 
-def test_definition_accepts_calibration() -> None:
-    calibration = RobotCalibration(instructions="Move to the rest pose.", set_zero=_noop_calibration_step)
+def test_definition_accepts_zero_calibration() -> None:
+    calibration = RobotZeroCalibration(instructions="Move to the rest pose.", set_zero=_noop_calibration_step)
     definition = RobotCatalogDefinition(
-        type="Test_Follower", display_name="Test Follower", role="follower", calibration=calibration
+        type="Test_Follower", display_name="Test Follower", role="follower", zero_calibration=calibration
     )
 
-    assert definition.calibration is calibration
+    assert definition.zero_calibration is calibration
     assert calibration.release is None
     assert calibration.zero_tolerance_deg == 5.0
 
@@ -133,9 +133,9 @@ def test_definition_accepts_calibration() -> None:
         ("Move to the rest pose.", float("nan"), "zero_tolerance_deg must be a finite positive value"),
     ],
 )
-def test_calibration_rejects_invalid_values(instructions: str, zero_tolerance_deg: float, message: str) -> None:
+def test_zero_calibration_rejects_invalid_values(instructions: str, zero_tolerance_deg: float, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        RobotCalibration(
+        RobotZeroCalibration(
             instructions=instructions, set_zero=_noop_calibration_step, zero_tolerance_deg=zero_tolerance_deg
         )
 
