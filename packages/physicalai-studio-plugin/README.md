@@ -221,25 +221,25 @@ class RobotAsset:
 
 ```python
 @dataclass(frozen=True)
-class RobotZeroCalibration:
+class RobotZeroCalibration(Generic[_RobotT]):
     instructions: str
-    set_zero: Callable[[PhysicalAIRobot], Awaitable[None]]
-    release: Callable[[PhysicalAIRobot], Awaitable[None]] | None = None
+    set_zero: Callable[[_RobotT], Awaitable[None]]
+    release: Callable[[_RobotT], Awaitable[None]] | None = None
     zero_tolerance_deg: float = 5.0
 ```
 
-For arms whose calibration is a zero pose stored on the motors. When a robot type sets `zero_calibration`, Studio offers a guided step while the robot is added: it opens its own exclusive connection to the driver from `robot_builder`, calls `release` so the arm can be moved by hand, and shows `instructions` next to a live 3D view. When the user confirms the pose it calls `set_zero`, then checks that every joint reads within `zero_tolerance_deg` of zero.
+For arms whose calibration is a zero pose stored on the motors. Parameterize it with the driver class `robot_builder` returns so the steps can call that driver's methods. When a robot type sets `zero_calibration`, Studio offers a guided step while the robot is added: it opens its own exclusive connection to the driver from `robot_builder`, calls `release` so the arm can be moved by hand, and shows `instructions`, next to a live 3D view when the type has a `RobotAsset`. When the user confirms the pose it calls `set_zero`, then checks that every joint reads within `zero_tolerance_deg` of zero.
 
 ```python
-async def _release(robot: PhysicalAIRobot) -> None:
+async def _release(robot: MyRobot) -> None:
     await asyncio.to_thread(robot.disable_torque)
 
 
-async def _set_zero(robot: PhysicalAIRobot) -> None:
+async def _set_zero(robot: MyRobot) -> None:
     await asyncio.to_thread(robot.set_zero_position)
 
 
-zero_calibration = RobotZeroCalibration(
+zero_calibration = RobotZeroCalibration[MyRobot](
     instructions="Move the arm to its rest pose and close the gripper.",
     release=_release,
     set_zero=_set_zero,
