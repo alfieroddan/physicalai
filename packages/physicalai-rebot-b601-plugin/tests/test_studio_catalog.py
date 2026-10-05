@@ -260,6 +260,8 @@ def test_rebot_b601_rs_payload_rejects_invalid_interface_names(interface: str) -
         {"max_relative_target": 0.0},
         {"max_relative_target": float("inf")},
         {"gripper_mit_torque_limit": -1.0},
+        {"gripper_mit_torque_limit": 14.1},
+        {"gripper_mit_hold_torque_limit": 14.1},
         {"gripper_mit_kp": float("nan")},
         {"mit_kp": {"shoulder_pan": -1.0, "shoulder_lift": 1, "elbow_flex": 1, "wrist_flex": 1, "wrist_yaw": 1, "wrist_roll": 1}},
     ],

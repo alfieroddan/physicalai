@@ -26,6 +26,7 @@ from loguru import logger
 
 from physicalai.config import export_config
 from physicalai_rebot_b601_plugin.constants import (
+    REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
     REBOT_B601_RS_JOINT_DIRECTIONS,
     REBOT_B601_RS_JOINT_LIMITS_DEG,
     REBOT_B601_RS_JOINT_ORDER,
@@ -164,6 +165,10 @@ class ReBotB601RS:
         gripper_values = (gripper_mit_kp, gripper_mit_kd, gripper_mit_torque_limit, gripper_mit_hold_torque_limit)
         if not all(math.isfinite(value) and value >= 0.0 for value in gripper_values):
             msg = "gripper MIT gains and torque limits must be non-negative finite values."
+            raise ValueError(msg)
+        torque_limits = (gripper_mit_torque_limit, gripper_mit_hold_torque_limit)
+        if any(limit > REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM for limit in torque_limits):
+            msg = f"gripper torque limits must not exceed {REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM} N·m."
             raise ValueError(msg)
         if max_relative_target is not None and (not math.isfinite(max_relative_target) or max_relative_target <= 0.0):
             msg = f"max_relative_target must be a finite positive value, got {max_relative_target!r}"

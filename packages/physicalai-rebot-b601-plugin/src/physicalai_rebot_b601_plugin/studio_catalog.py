@@ -31,7 +31,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_rebot_b601_plugin
 from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
-from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_MIT_KD, REBOT_B601_RS_MIT_KP
+from physicalai_rebot_b601_plugin.constants import (
+    REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+    REBOT_B601_RS_MIT_KD,
+    REBOT_B601_RS_MIT_KP,
+)
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -298,6 +302,7 @@ class ReBotB601RSPayload(BaseModel):
     gripper_mit_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
         default=3.5,
         ge=0.0,
+        le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
         title="Gripper torque limit while moving (N·m)",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
@@ -305,6 +310,7 @@ class ReBotB601RSPayload(BaseModel):
     gripper_mit_hold_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
         default=1.0,
         ge=0.0,
+        le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
         title="Gripper torque limit while holding (N·m)",
         description="Torque limit once the gripper stalls, for example on a grasped object.",
