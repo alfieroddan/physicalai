@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.9.0](https://github.com/alfieroddan/physicalai/compare/physicalai-rebot-b601-plugin-v0.8.0...physicalai-rebot-b601-plugin-v0.9.0) (2026-10-07)
+
+
+### ✨ Features
+
+* add first party robot plugins ([#263](https://github.com/alfieroddan/physicalai/issues/263)) ([41e3ecf](https://github.com/alfieroddan/physicalai/commit/41e3ecf5e8d7a1c91d14234fceb0d040e2c7e07b))
+* **rebot-b601,stararm:** add zero-pose calibration for B601-RS and Star Arm leaders ([#325](https://github.com/alfieroddan/physicalai/issues/325)) ([ab00dc7](https://github.com/alfieroddan/physicalai/commit/ab00dc71f64470940f67daadc0acd03ab0f8fd33))
+* **rebot-b601:** add B601-RS follower to the Studio catalog ([#319](https://github.com/alfieroddan/physicalai/issues/319)) ([216c65f](https://github.com/alfieroddan/physicalai/commit/216c65ffd9f6cd53892dcfeb799d1fde629e7e7c))
+* **rebot-b601:** expose B601-RS motion settings and 3D preview in Studio ([#324](https://github.com/alfieroddan/physicalai/issues/324)) ([818eaf4](https://github.com/alfieroddan/physicalai/commit/818eaf4224d43dda2d0c02b2af264a662f806d85))
+
+
+### 🐛 Bug Fixes
+
+* **rebot-b601:** add max_relative_target and Seeed gripper torque limits to B601-RS ([#322](https://github.com/alfieroddan/physicalai/issues/322)) ([9b69d6f](https://github.com/alfieroddan/physicalai/commit/9b69d6f23bfce6e3f1cf687a2108389b0e33e471))
+* **rebot-b601:** hold pose correctly and expose MIT gains on the RS driver ([#300](https://github.com/alfieroddan/physicalai/issues/300)) ([cba5932](https://github.com/alfieroddan/physicalai/commit/cba59327df509cf492e02dae11b049eaf5ded54c))
+
+
+### ✅ Tests
+
+* **plugins:** patch only the mocked sdk in rebot and stararm fixtures ([#345](https://github.com/alfieroddan/physicalai/issues/345)) ([01edbf4](https://github.com/alfieroddan/physicalai/commit/01edbf4eeb640634d96f0c11c1516677a4a9001b))
+
+
+### 🔧 Chores
+
+* **main:** release physicalai-rebot-b601-plugin 0.7.0 ([#277](https://github.com/alfieroddan/physicalai/issues/277)) ([3808fe3](https://github.com/alfieroddan/physicalai/commit/3808fe3dbd3dbe0870b0372d624980719ffc411b))
+* **main:** release physicalai-rebot-b601-plugin 0.8.0 ([#318](https://github.com/alfieroddan/physicalai/issues/318)) ([5edabca](https://github.com/alfieroddan/physicalai/commit/5edabca5cfd4e910caac5e28a1210e93cb888573))
+
 ## [0.8.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.7.0...physicalai-rebot-b601-plugin-v0.8.0) (2026-10-06)
 
 
