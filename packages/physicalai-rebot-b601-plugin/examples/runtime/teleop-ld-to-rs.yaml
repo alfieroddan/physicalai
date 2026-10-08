@@ -1,0 +1,26 @@
+# Star Arm 102-LD to reBot B601-RS teleoperation runtime config.
+#
+# Run from the repository root after updating the serial port and CAN channel:
+#
+#   uv run --with physicalai-stararm-plugin physicalai run \
+#     --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-ld-to-rs.yaml
+
+runtime:
+  robot:
+    class_path: physicalai_rebot_b601_plugin.rs.ReBotB601RS
+    init_args:
+      port: can0 # CHANGE_ME: SocketCAN channel
+      can_adapter: socketcan
+      max_relative_target: -1 # No per-command step limit
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_stararm_plugin.stararm102ld.StarArm102LDLeader
+        init_args:
+          port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
+          baudrate: 1000000
+          follower_profile: b601
+
+  fps: 60.0
