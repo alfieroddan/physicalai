@@ -5,11 +5,25 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from physicalai.inference.callbacks import Callback, PatchPolicyTemporalWindowCallback
 from physicalai.inference.component_factory import instantiate_component
 from physicalai.inference.manifest import ComponentSpec
+
+
+def _require_modified_inputs(inputs: dict[str, Any] | None) -> dict[str, Any]:
+    """Return callback output after narrowing its optional contract.
+
+    Raises:
+        AssertionError: If the callback unexpectedly returns no modified inputs.
+    """
+    if inputs is None:
+        msg = "Temporal window callback unexpectedly left single-frame inputs unchanged."
+        raise AssertionError(msg)
+    return inputs
 
 
 def test_instantiates_from_registered_manifest_name() -> None:
@@ -27,12 +41,12 @@ def test_builds_and_resets_camera_history() -> None:
     first = np.ones((1, 3, 2, 2), dtype=np.float32)
     second = np.full((1, 3, 2, 2), 2.0, dtype=np.float32)
 
-    initial = callback.on_predict_start({"images": {"front": first}})
-    updated = callback.on_predict_start({"images": {"front": second}})
+    initial = _require_modified_inputs(callback.on_predict_start({"images": {"front": first}}))
+    updated = _require_modified_inputs(callback.on_predict_start({"images": {"front": second}}))
 
     np.testing.assert_allclose(initial["images"]["front"], np.stack([first, first], axis=1))
     np.testing.assert_allclose(updated["images"]["front"], np.stack([first, second], axis=1))
 
     callback.on_reset()
-    reset = callback.on_predict_start({"images": {"front": second}})
+    reset = _require_modified_inputs(callback.on_predict_start({"images": {"front": second}}))
     np.testing.assert_allclose(reset["images"]["front"], np.stack([second, second], axis=1))
