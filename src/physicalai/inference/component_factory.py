@@ -119,6 +119,7 @@ component_registry.register("rldx1_rope", "physicalai.inference.preprocessors.Rl
 component_registry.register("to_float_tensor", "physicalai.inference.preprocessors.ToFloatTensorPreprocessor")
 component_registry.register("molmoact2_pre", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
 component_registry.register("joint_frame_preprocess", "physicalai.inference.preprocessors.JointFramePreprocessor")
+component_registry.register("patch_policy", "physicalai.inference.preprocessors.PatchPolicyPreprocessor")
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
@@ -132,6 +133,10 @@ component_registry.register("latency_monitor", "physicalai.inference.callbacks.L
 component_registry.register("rtc_latency", "physicalai.inference.callbacks.RTCLatencyTracker")
 component_registry.register("rldx1_vtc", "physicalai.inference.callbacks.Rldx1VtcWindowCallback")
 component_registry.register("throughput_monitor", "physicalai.inference.callbacks.ThroughputMonitor")
+component_registry.register(
+    "patch_policy_temporal_images",
+    "physicalai.inference.callbacks.PatchPolicyTemporalWindowCallback",
+)
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
