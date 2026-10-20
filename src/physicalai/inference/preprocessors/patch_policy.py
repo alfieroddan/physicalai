@@ -32,6 +32,7 @@ class PatchPolicyPreprocessor(Preprocessor):
         image_resolution: Target image height and width.
         image_layout: Input image layout. When omitted, the shared resize
             processor infers the layout.
+        n_obs_steps: Required number of temporal observation frames.
     """
 
     def __init__(
@@ -40,6 +41,7 @@ class PatchPolicyPreprocessor(Preprocessor):
         image_resolution: tuple[int, int],
         *,
         image_layout: str | None = None,
+        n_obs_steps: int = 1,
     ) -> None:
         """Initialize the camera layout and shared stretch resizer.
 
@@ -52,8 +54,12 @@ class PatchPolicyPreprocessor(Preprocessor):
         if len(set(camera_names)) != len(camera_names):
             msg = f"Patch Policy camera names must be unique, got {camera_names!r}."
             raise ValueError(msg)
+        if n_obs_steps <= 0:
+            msg = f"n_obs_steps must be positive, got {n_obs_steps}."
+            raise ValueError(msg)
         self._camera_names = list(camera_names)
         self._image_resolution = tuple(image_resolution)
+        self._n_obs_steps = n_obs_steps
         self._resizer = ResizePreprocessor(
             self._image_resolution,
             image_layout=image_layout,
@@ -105,6 +111,12 @@ class PatchPolicyPreprocessor(Preprocessor):
             raise ValueError(msg)
 
         batch, timesteps = image.shape[:2]
+        if timesteps != self._n_obs_steps:
+            msg = (
+                f"Patch Policy camera {camera_name!r} has {timesteps} observation timestep(s); "
+                f"expected {self._n_obs_steps}."
+            )
+            raise ValueError(msg)
         flattened = image.reshape(batch * timesteps, *image.shape[2:])
         resized = self._resizer({IMAGES: flattened})[IMAGES]
         if not isinstance(resized, np.ndarray):

@@ -133,10 +133,6 @@ component_registry.register("latency_monitor", "physicalai.inference.callbacks.L
 component_registry.register("rtc_latency", "physicalai.inference.callbacks.RTCLatencyTracker")
 component_registry.register("rldx1_vtc", "physicalai.inference.callbacks.Rldx1VtcWindowCallback")
 component_registry.register("throughput_monitor", "physicalai.inference.callbacks.ThroughputMonitor")
-component_registry.register(
-    "patch_policy_temporal_images",
-    "physicalai.inference.callbacks.PatchPolicyTemporalWindowCallback",
-)
 
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
