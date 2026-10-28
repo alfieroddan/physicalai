@@ -13,7 +13,6 @@ from typing_extensions import override
 
 from physicalai.inference.constants import IMAGES
 from physicalai.inference.preprocessors.base import Preprocessor
-from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreprocessor
 
 _SINGLE_IMAGE_NDIM = 3
 _BATCHED_IMAGE_NDIM = 4
@@ -21,29 +20,25 @@ _TEMPORAL_IMAGE_NDIM = 5
 
 
 class PatchPolicyPreprocessor(Preprocessor):
-    """Order, resize, and stack camera images for Patch Policy.
+    """Order camera images and add batch and temporal axes for Patch Policy.
 
-    The output ``images`` array has shape ``(B, T, V, C, H, W)``. Pixel
-    normalization is deliberately left to the generic
-    :class:`~physicalai.inference.preprocessors.StatsNormalizer` stage.
+    Each output ``images.<camera>`` array has shape ``(B, T, ...)``.
+    Pixel values, spatial layout, and resolution are unchanged. Compose with
+    ``ToFloatTensorPreprocessor``, ``ResizePreprocessor``, and ``StatsNormalizer``
+    for model-ready images.
 
     Args:
         camera_names: Camera names in the same order used during training.
-        image_resolution: Target image height and width.
-        image_layout: Input image layout. When omitted, the shared resize
-            processor infers the layout.
-        n_obs_steps: Required number of temporal observation frames.
+        n_obs_steps: Full observation window length; one current frame is also accepted.
     """
 
     def __init__(
         self,
         camera_names: list[str],
-        image_resolution: tuple[int, int],
         *,
-        image_layout: str | None = None,
         n_obs_steps: int = 1,
     ) -> None:
-        """Initialize the camera layout and shared stretch resizer.
+        """Initialize camera order and the accepted observation window.
 
         Raises:
             ValueError: If no cameras are configured or camera names are duplicated.
@@ -58,17 +53,10 @@ class PatchPolicyPreprocessor(Preprocessor):
             msg = f"n_obs_steps must be positive, got {n_obs_steps}."
             raise ValueError(msg)
         self._camera_names = list(camera_names)
-        self._image_resolution = tuple(image_resolution)
         self._n_obs_steps = n_obs_steps
-        self._resizer = ResizePreprocessor(
-            self._image_resolution,
-            image_layout=image_layout,
-            mode=ResizeMode.STRETCH,
-        )
 
     @override
     def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        outputs = dict(inputs)
         views = [self._prepare_view(self._resolve_view(inputs, name), name) for name in self._camera_names]
         reference_shape = views[0].shape[:2]
         for name, view in zip(self._camera_names[1:], views[1:], strict=True):
@@ -78,20 +66,27 @@ class PatchPolicyPreprocessor(Preprocessor):
                     f"camera {name!r} has {view.shape[:2]}, expected {reference_shape}."
                 )
                 raise ValueError(msg)
-        outputs[IMAGES] = np.stack(views, axis=2)
+        outputs = {f"{IMAGES}.{name}": view for name, view in zip(self._camera_names, views, strict=True)}
+        camera_keys = {
+            key for name in self._camera_names for key in (name, f"{IMAGES}.{name}", f"observation.{IMAGES}.{name}")
+        }
+        for key, value in inputs.items():
+            if key == IMAGES or key in camera_keys:
+                continue
+            outputs[key] = value
         return outputs
 
     @staticmethod
     def _resolve_view(inputs: Mapping[str, Any], camera_name: str) -> np.ndarray:
         images = inputs.get(IMAGES)
         if isinstance(images, Mapping):
-            for key in (camera_name, f"observation.images.{camera_name}"):
+            for key in (camera_name, f"{IMAGES}.{camera_name}", f"observation.{IMAGES}.{camera_name}"):
                 if key in images:
                     return np.asarray(images[key])
         elif isinstance(images, np.ndarray):
             return images
 
-        for key in (f"{IMAGES}.{camera_name}", f"observation.images.{camera_name}", camera_name):
+        for key in (f"{IMAGES}.{camera_name}", f"observation.{IMAGES}.{camera_name}", camera_name):
             if key in inputs:
                 return np.asarray(inputs[key])
         msg = f"Missing Patch Policy camera {camera_name!r}."
@@ -110,26 +105,18 @@ class PatchPolicyPreprocessor(Preprocessor):
             )
             raise ValueError(msg)
 
-        batch, timesteps = image.shape[:2]
-        if timesteps != self._n_obs_steps:
+        timesteps = image.shape[1]
+        if timesteps not in {1, self._n_obs_steps}:
             msg = (
                 f"Patch Policy camera {camera_name!r} has {timesteps} observation timestep(s); "
-                f"expected {self._n_obs_steps}."
+                f"expected 1 or {self._n_obs_steps}."
             )
             raise ValueError(msg)
-        flattened = image.reshape(batch * timesteps, *image.shape[2:])
-        resized = self._resizer({IMAGES: flattened})[IMAGES]
-        if not isinstance(resized, np.ndarray):
-            msg = "Patch Policy image resize produced an invalid nested result."
-            raise TypeError(msg)
-        return resized.reshape(batch, timesteps, *resized.shape[1:])
+        return image
 
     def __repr__(self) -> str:
-        """Return the configured camera order and target resolution."""
-        return (
-            f"{self.__class__.__name__}(camera_names={self._camera_names!r}, "
-            f"image_resolution={self._image_resolution!r})"
-        )
+        """Return the configured camera order and observation window."""
+        return f"{self.__class__.__name__}(camera_names={self._camera_names!r}, n_obs_steps={self._n_obs_steps!r})"
 
 
 __all__ = ["PatchPolicyPreprocessor"]

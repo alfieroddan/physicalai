@@ -13,6 +13,7 @@ from physicalai.inference.manifest import ComponentSpec
 from physicalai.inference.preprocessors import (
     PatchPolicyPreprocessor,
     Preprocessor,
+    ResizePreprocessor,
     StatsNormalizer,
     ToFloatTensorPreprocessor,
 )
@@ -23,8 +24,6 @@ def test_instantiates_from_registered_manifest_name() -> None:
     spec = ComponentSpec.model_validate({
         "type": "patch_policy",
         "camera_names": ["front"],
-        "image_resolution": [2, 2],
-        "image_layout": "BCHW",
     })
 
     processor = instantiate_component(Preprocessor, spec)
@@ -32,12 +31,10 @@ def test_instantiates_from_registered_manifest_name() -> None:
     assert isinstance(processor, PatchPolicyPreprocessor)  # ruff: ignore[assert]
 
 
-def test_orders_resizes_and_stacks_temporal_camera_views() -> None:
-    """Configured camera order controls the view axis for temporal inputs."""
+def test_orders_and_flattens_temporal_camera_views_without_changing_pixels() -> None:
+    """Camera preparation preserves image values, dtype, and resolution."""
     processor = PatchPolicyPreprocessor(
         ["front", "wrist"],
-        (2, 3),
-        image_layout="BCHW",
         n_obs_steps=2,
     )
     front = np.full((1, 2, 3, 4, 5), 64, dtype=np.uint8)
@@ -45,39 +42,45 @@ def test_orders_resizes_and_stacks_temporal_camera_views() -> None:
 
     result = processor({"images": {"wrist": wrist, "front": front}})
 
-    np.testing.assert_equal(result["images"].shape, (1, 2, 2, 3, 2, 3))
-    np.testing.assert_equal(result["images"].dtype, np.dtype(np.float32))
-    np.testing.assert_allclose(result["images"][:, :, 0], 64.0 / 255.0)
-    np.testing.assert_allclose(result["images"][:, :, 1], 128.0 / 255.0)
+    np.testing.assert_equal(list(result), ["images.front", "images.wrist"])
+    np.testing.assert_array_equal(result["images.front"], front)
+    np.testing.assert_array_equal(result["images.wrist"], wrist)
+    np.testing.assert_equal(result["images.front"].dtype, np.dtype(np.uint8))
 
 
 def test_adds_batch_and_temporal_axes_for_single_images() -> None:
-    """Unbatched images receive batch, temporal, and view axes."""
-    processor = PatchPolicyPreprocessor(["front"], (2, 2), image_layout="BCHW")
+    """Unbatched images receive batch and temporal axes only."""
+    processor = PatchPolicyPreprocessor(["front"])
 
     result = processor({"images.front": np.ones((3, 2, 2), dtype=np.float32)})
 
-    np.testing.assert_equal(result["images"].shape, (1, 1, 1, 3, 2, 2))
+    np.testing.assert_equal(result["images.front"].shape, (1, 1, 3, 2, 2))
 
 
 def test_infers_batched_channels_last_camera_layout() -> None:
     """Raw Runtime camera frames may arrive in BHWC layout."""
-    processor = PatchPolicyPreprocessor(["front"], (2, 2))
+    processor = PatchPolicyPreprocessor(["front"])
+    resizer = ResizePreprocessor((2, 2), mode="stretch")
 
-    result = processor({"images": {"front": np.ones((1, 6, 5, 3), dtype=np.float32)}})
+    result = resizer(processor({"images": {"front": np.ones((1, 6, 5, 3), dtype=np.float32)}}))
 
-    np.testing.assert_equal(result["images"].shape, (1, 1, 1, 3, 2, 2))
+    np.testing.assert_equal(result["images.front"].shape, (1, 1, 3, 2, 2))
 
 
-def test_composes_with_stats_normalizer_using_view_axis_stats() -> None:
-    """Stacked camera statistics broadcast over batch, time, and pixels."""
-    processor = PatchPolicyPreprocessor(["front", "wrist"], (2, 2), image_layout="BCHW")
+def test_composes_with_stats_normalizer_using_camera_stats() -> None:
+    """Per-camera statistics broadcast over batch, time, and pixels."""
+    processor = PatchPolicyPreprocessor(["front", "wrist"])
+    resizer = ResizePreprocessor((2, 2), image_layout="BCHW", mode="stretch")
     normalizer = StatsNormalizer(
         mode="mean_std",
         stats={
-            "images": {
-                "mean": np.array([0.5, 1.0], dtype=np.float32).reshape(2, 1, 1, 1),
-                "std": np.array([0.5, 2.0], dtype=np.float32).reshape(2, 1, 1, 1),
+            "images.front": {
+                "mean": np.full((3, 1, 1), 0.5, dtype=np.float32),
+                "std": np.full((3, 1, 1), 0.5, dtype=np.float32),
+            },
+            "images.wrist": {
+                "mean": np.full((3, 1, 1), 1.0, dtype=np.float32),
+                "std": np.full((3, 1, 1), 2.0, dtype=np.float32),
             },
         },
     )
@@ -88,10 +91,10 @@ def test_composes_with_stats_normalizer_using_view_axis_stats() -> None:
         },
     }
 
-    result = normalizer(processor(inputs))["images"]
+    result = normalizer(resizer(ToFloatTensorPreprocessor()(processor(inputs))))
 
-    np.testing.assert_allclose(result[:, :, 0], 1.0)
-    np.testing.assert_allclose(result[:, :, 1], 1.0)
+    np.testing.assert_allclose(result["images.front"], 1.0)
+    np.testing.assert_allclose(result["images.wrist"], 1.0)
 
 
 def test_shared_normalizer_and_float_transform_produce_model_dtype() -> None:
@@ -112,7 +115,7 @@ def test_shared_normalizer_and_float_transform_produce_model_dtype() -> None:
 
 def test_rejects_missing_or_misaligned_cameras() -> None:
     """Missing views and inconsistent leading dimensions fail clearly."""
-    processor = PatchPolicyPreprocessor(["front", "wrist"], (2, 2), image_layout="BCHW")
+    processor = PatchPolicyPreprocessor(["front", "wrist"])
     with pytest.raises(KeyError, match="wrist"):
         processor({"images": {"front": np.ones((1, 3, 2, 2), dtype=np.float32)}})
 
@@ -128,8 +131,33 @@ def test_rejects_missing_or_misaligned_cameras() -> None:
 
 
 def test_rejects_unexpected_temporal_length() -> None:
-    """The packed temporal axis must match the exported model contract."""
-    processor = PatchPolicyPreprocessor(["front"], (2, 2), image_layout="BCHW", n_obs_steps=2)
+    """Only singleton frames or full observation windows are accepted."""
+    processor = PatchPolicyPreprocessor(["front"], n_obs_steps=2)
 
-    with pytest.raises(ValueError, match="expected 2"):
-        processor({"images": {"front": np.ones((1, 3, 2, 2), dtype=np.float32)}})
+    with pytest.raises(ValueError, match="expected 1 or 2"):
+        processor({"images": {"front": np.ones((1, 3, 3, 2, 2), dtype=np.float32)}})
+
+
+def test_accepts_singleton_observation_without_repeating_history() -> None:
+    """A current frame stays a singleton even when the policy uses a full window."""
+    processor = PatchPolicyPreprocessor(["front"], n_obs_steps=3)
+    result = processor({"images.front": np.ones((2, 1, 3, 2, 2), dtype=np.float32)})
+
+    np.testing.assert_equal(result["images.front"].shape, (2, 1, 3, 2, 2))
+
+
+def test_preserves_non_image_inputs_without_processing_actions() -> None:
+    """Action values and padding metadata pass through without transformation."""
+    processor = PatchPolicyPreprocessor(["front"])
+    actions = np.array([[[100.0, -50.0]]], dtype=np.float64)
+    padding = np.array([[False]])
+    result = processor({
+        "images.front": np.zeros((1, 3, 2, 2), dtype=np.uint8),
+        "action": actions,
+        "extra.action_is_pad": padding,
+        "images.front.is_pad": padding,
+    })
+
+    assert result["action"] is actions  # ruff: ignore[assert]
+    assert result["extra.action_is_pad"] is padding  # ruff: ignore[assert]
+    assert result["images.front.is_pad"] is padding  # ruff: ignore[assert]
