@@ -48,7 +48,8 @@ Custom `ActionSource` and `Execution` stay on the existing path unless adapted.
 
 ### The sync graph underneath RobotRuntime
 
-Default: one thread, dependency order, 30 Hz.
+One thread, dependency order. The built-in recipe uses Runtime's `fps` for the
+control loop. The equivalent custom graph declares node rates explicitly.
 
 ```python
 # Proposed API; camera, robot, and model are already configured.
@@ -68,3 +69,4 @@ with RobotRuntime.from_graph(graph) as runtime:
 ```
 
 More API examples: [S1/S2 — local, threaded, and ROS 2](examples/s1s2/index.md).
+Agent-facing APIs: [Agentic Runtime](../agent-docs/overview.md).

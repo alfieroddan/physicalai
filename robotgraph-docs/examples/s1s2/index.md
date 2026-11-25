@@ -62,11 +62,11 @@ policy = graph.add(S1PolicyNode(policy_model, name="policy", rate=10))
 commands = graph.add(RobotNode(robot, name="commands", rate=30))
 
 frames_out = graph.add(Ros2PublisherNode(
-    name="frames_out", topic="/s1s2/wrist", message_type=RosImage,
+    name="frames_out", rate=30, topic="/s1s2/wrist", message_type=RosImage,
     qos=camera_qos, encode=frame_to_ros_image,
 ))
 intent_in = graph.add(Ros2SubscriptionNode(
-    name="intent_in", topic="/s1s2/intent", message_type=RosIntent,
+    name="intent_in", rate=30, topic="/s1s2/intent", message_type=RosIntent,
     qos=intent_qos, decode=ros_to_intent,
 ))
 
@@ -87,11 +87,11 @@ graph = Graph()
 planner = graph.add(S2PlannerNode(planner_model, name="planner", rate=1))
 
 frames_in = graph.add(Ros2SubscriptionNode(
-    name="frames_in", topic="/s1s2/wrist", message_type=RosImage,
+    name="frames_in", rate=30, topic="/s1s2/wrist", message_type=RosImage,
     qos=camera_qos, decode=ros_image_to_frame,
 ))
 intent_out = graph.add(Ros2PublisherNode(
-    name="intent_out", topic="/s1s2/intent", message_type=RosIntent,
+    name="intent_out", rate=1, topic="/s1s2/intent", message_type=RosIntent,
     qos=intent_qos, encode=intent_to_ros,
 ))
 

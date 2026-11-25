@@ -96,6 +96,7 @@ automatically. Shared memory is optional for compatible payloads.
 camera = graph.add(
     Ros2SubscriptionNode(
         name="wrist_camera",
+        rate=30,
         topic="/wrist/image_raw",
         message_type=RosImage,
         qos=camera_qos,

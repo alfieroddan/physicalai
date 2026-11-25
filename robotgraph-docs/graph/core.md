@@ -11,7 +11,7 @@ wrong directions, and second producers. Incomplete wiring is allowed here.
 
 | Pass | Checks / output |
 | --- | --- |
-| Nodes | Unique names, valid ports, rates, and worker assignments |
+| Nodes | Unique names, valid ports and worker assignments; positive rates for periodic nodes |
 | Edges | Registered output → compatible input; one producer per required input, at most one per optional input; errors name both endpoints |
 | Order | Topological sort: emit nodes with zero incoming edges, decrement counts for their consumers, repeat. Registration order breaks ties; leftover nodes mean a cycle. |
 | Delivery | Worker groups, port routing, in-process or local IPC channels; compatible schema/codec and delivery policy at process boundaries |
