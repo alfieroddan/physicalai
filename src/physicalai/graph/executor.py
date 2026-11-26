@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from physicalai.graph.compiler import ExecutionPlan, NodePlan
-    from physicalai.graph.model import Edge, Node, PortAddress
+    from physicalai.graph.model import Node, PortAddress
 
     from ._trace import Trace
 
@@ -196,8 +196,9 @@ class _Session:
             return self.clock.now().ns
 
         outcome = "failed"
+        input_ages_ns: dict[str, int | None] = {}
         try:
-            outcome = self._step(entry, end)
+            outcome = self._step(entry, end, input_ages_ns)
         finally:
             finished = self.clock.now().ns
             self.trace.tick(
@@ -207,10 +208,11 @@ class _Session:
                 finished_ns=finished,
                 period_ns=entry.period_ns,
                 outcome=outcome,
+                input_ages_ns=input_ages_ns,
             )
         return finished
 
-    def _step(self, entry: NodePlan, end: int) -> str:
+    def _step(self, entry: NodePlan, end: int, input_ages_ns: dict[str, int | None] | None = None) -> str:
         node = entry.node
         ctx = self.contexts[node.name]
         with _node_hook(node, "ready"):
@@ -221,8 +223,17 @@ class _Session:
         now = self.clock.now()
         for edge in entry.incoming:
             message = self.latest.get(edge.destination.address)
-            if message is not None and self._is_fresh(edge, message, now):
-                inputs[edge.destination.name] = message
+            port = edge.destination.name
+            max_age = edge.policy.max_age if edge.policy is not None else None
+            age_ns = None
+            if message is not None and (max_age is not None or input_ages_ns is not None):
+                age_ns = self._age_ns(message, now)
+            if input_ages_ns is not None:
+                input_ages_ns[port] = age_ns
+
+            fresh = max_age is None or (age_ns is not None and age_ns / NANOSECONDS_PER_SECOND <= max_age)
+            if message is not None and fresh:
+                inputs[port] = message
             elif edge.destination.required:
                 return "missing input" if message is None else "stale input"
 
@@ -233,14 +244,11 @@ class _Session:
         return "ran"
 
     @staticmethod
-    def _is_fresh(edge: Edge, message: Message[object], now: Timestamp) -> bool:
-        if edge.policy is None or edge.policy.max_age is None:
-            return True
+    def _age_ns(message: Message[object], now: Timestamp) -> int | None:
         timestamp = message.captured_at or message.published_at
-        if now.clock_domain != timestamp.clock_domain:
-            return False
-        age_s = (now.ns - timestamp.ns) / NANOSECONDS_PER_SECOND
-        return 0 <= age_s <= edge.policy.max_age
+        if now.clock_domain != timestamp.clock_domain or timestamp.ns > now.ns:
+            return None
+        return now.ns - timestamp.ns
 
     def _publish(self, entry: NodePlan, outputs: Mapping[str, object]) -> None:
         if not isinstance(outputs, Mapping):

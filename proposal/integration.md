@@ -1,24 +1,26 @@
 # RobotGraph integration plan
 
-Loose order: **standalone graph → built-in RobotRuntime modes → custom pipelines and transport → agentic workflows**. Each numbered heading is a proposed issue. APIs are sketches unless marked as existing.
+Order: **standalone graph → built-in RobotRuntime modes → custom pipelines and transport → agentic workflows**. Issues 1–2 are implemented in `physicalai.graph`. The [standalone demos](demos/README.md) validate the direction with fake devices; they are not Runtime integration or a hardware baseline. Issues 3–17 remain proposed unless noted below.
 
 ## Epic 1 — Run a graph without RobotRuntime
 
 ### Issue 1 — Build the primitives and compile the wiring
 
-Implement the core types before adding camera or robot support:
+**Implemented** in [`physicalai.graph`](../src/physicalai/graph/). The core types do not depend on camera or robot plugins:
 
-| Primitive                                                                             | What to build                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`Graph`](../robotgraph-docs/graph/primitives.md#wire-a-graph)                        | `add()` registers a named node. `connect(src, dst)` is shorthand for `add_edge(Edge(src, dst))`. A graph can be incomplete while you build it.                                                   |
-| [`Node`](../robotgraph-docs/graph/primitives.md#node-lifecycle)                       | Declare inputs, outputs, and an optional periodic `rate`. Implement `start(ctx)`, `ready(ctx)`, `step(ctx, inputs)`, and `stop(ctx)`. `step()` returns outputs keyed by port name.               |
-| [`Port`](../robotgraph-docs/graph/primitives.md#declare-ports-on-a-custom-node)       | A read-only endpoint with a node, name, direction, and payload type. `input(name)` and `output(name)` look up existing ports. Required inputs need one producer; optional inputs can be unwired. |
-| [`Edge`](../robotgraph-docs/graph/primitives.md#build-an-edge-explicitly)             | Connect one named output to one named input. Port names can differ; types must be compatible. An output can feed several inputs.                                                                 |
-| [`DeliveryPolicy`](../robotgraph-docs/timing/overview.md#enforce-at-the-point-of-use) | Start with `Latest(max_age=...)`: read the newest available message and reject it if it is too old for that edge. Delivery policy does not choose the transport.                                 |
-| [`Message[T]`](../robotgraph-docs/transport/primitives.md#message-envelope)           | Carry a typed payload with its source port, sequence number, capture time (if known), and publication time.                                                                                      |
-| [`ExecutionPlan`](../robotgraph-docs/graph/core.md#compile)                           | Compile the wiring into a fixed dependency order, worker assignments, and channel routes. Recompile after rewiring.                                                                              |
+| Primitive                                                                       | What to build                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`Graph`](../robotgraph-docs/graph/primitives.md#wire-a-graph)                  | `add()` registers a named node. `connect(src, dst)` is shorthand for `add_edge(Edge(src, dst))`. A graph can be incomplete while you build it.                                                   |
+| [`Node`](../robotgraph-docs/graph/primitives.md#node-lifecycle)                 | Declare inputs, outputs, and a positive periodic `rate` for scheduled nodes. `step()` returns outputs keyed by port name.                                                                        |
+| [`Port`](../robotgraph-docs/graph/primitives.md#declare-ports-on-a-custom-node) | A read-only endpoint with a node, name, direction, and payload type. `input(name)` and `output(name)` look up existing ports. Required inputs need one producer; optional inputs can be unwired. |
+| [`Edge`](../robotgraph-docs/graph/primitives.md#build-an-edge-explicitly)       | Connect one named output to one named input. Port names can differ; types must be compatible. An output can feed several inputs.                                                                 |
+| [`Latest`](../robotgraph-docs/timing/overview.md#enforce-at-the-point-of-use)   | Read the newest message and reject it if its age exceeds the edge limit. `Latest` is the only implemented delivery policy, not a transport selector.                                             |
+| [`Message[T]`](../robotgraph-docs/transport/primitives.md#message-envelope)     | Carry a typed payload with its source port, sequence number, capture time (if known), and publication time.                                                                                      |
+| [`ExecutionPlan`](../robotgraph-docs/graph/core.md#compile)                     | Compile the wiring into a fixed dependency order, node periods, and routes for one worker. Recompile after rewiring.                                                                             |
 
 ```python
+from physicalai.graph import Graph, Node
+
 class Counter(Node):
     outputs = {"count": int}
 
@@ -48,25 +50,23 @@ graph.connect(counter.output("count"), recorder.input("sample"))
 #                     policy=Latest(max_age=0.2)))
 ```
 
-**Done when:** compile returns a fixed order and channel plan without opening devices or starting workers. Tests reject unknown ports, incompatible types, missing required connections, a second producer, and cycles. Fan-out works.
+**Verification:** compiler tests cover wiring and fan-out. The [counter demo](demos/README.md#1-counter-and-fan-out) runs the plan on one thread.
 
 ### Issue 2 — Run the plan on one thread
 
-Start with fake nodes and a fake clock. Call `start()` once, check `ready()` before reading inputs, and call `step()` once per due batch in dependency order. A skipped step returns no new data. Advance past missed ticks instead of replaying them. Stop scheduling and call `stop()` on nodes that started successfully.
+**Implemented** in [`executor.py`](../src/physicalai/graph/executor.py). Call `start()` once, check `ready()` before reading inputs, and run due nodes once per batch in dependency order. Skip missed ticks rather than replaying them. On exit, stop successfully started nodes in reverse order.
 
 ```python
-# Standalone runner sketch; no RobotRuntime or hardware.
-plan = compile_graph(graph)
-GraphExecutor(plan).run(duration_s=1)
+# Standalone runner; no RobotRuntime or hardware.
+from physicalai.graph import GraphExecutor, compile_graph
 
-# Inside the worker, after readiness and input checks:
-outputs = node.step(ctx, inputs)       # e.g. {"count": 42}
-publish_outputs(plan, node, outputs)   # Wrap and deliver; don't step the consumer.
+plan = compile_graph(graph)
+GraphExecutor(plan).run(duration_s=1, logging=True, trace_path="counter-trace.json")
 ```
 
 Validate the returned ports and payloads, then send a `Message[T]` to each outgoing edge. Include source port, sequence, and publication time. Keep the original capture time when known; don't substitute the publication time for it.
 
-**Done when:** tests cover due order, a wired but empty input, stale input, overruns without catch-up, stop, and cleanup after a failed start or step.
+**Verification:** fake-clock tests cover scheduling, freshness, and failure cleanup. The [trace guide](../robotgraph-docs/validation/overview.md) documents the implemented timing fields.
 
 ### Issue 3 — Add basic nodes that wrap existing plugins
 
@@ -100,6 +100,8 @@ GraphExecutor(compile_graph(graph)).run(duration_s=1)
 
 Keep placement separate from wiring and rate. A local `Latest` edge holds one message; the producer replaces it and the consumer reads it on its own tick. Workers don't wait for each other. No ROS 2, Zenoh, or DDS dependency.
 
+The [async and ring demos](demos/README.md) manage their own model worker. They do not implement executor-managed `Thread()` placement or cross-thread graph edges.
+
 ```python
 plan = compile_graph(graph, placement={"recorder": Thread()})
 GraphExecutor(plan).run(duration_s=1)
@@ -114,6 +116,8 @@ Design: [Primitives](../robotgraph-docs/graph/primitives.md) · [Compiler and wo
 ### Issue 5 — Capture the current Runtime baseline
 
 Run sync, async, and RTC on the current backend before changing it. Use the same model, observations, and `fps` for both backends. Use a deterministic fixture to compare action order and a representative simulation run to compare timing.
+
+The fake-device Perfetto traces are illustrations, not this baseline.
 
 **Done when:** there is one repeatable comparison for all three modes. Record control tick delay, inference latency, queue underruns, and stop behavior. Agree on acceptable timing differences before switch-over.
 
@@ -190,7 +194,9 @@ with RobotRuntime.from_graph(graph, placement=placement) as runtime:
 
 **Done when:** both layouts run in simulation, missing or stale required intent skips S1, and the command path checks whether prior actions are still valid. Keep the full wiring examples in Markdown.
 
-### Issue 11 — Add a timing trace for custom graphs
+### Issue 11 — Expose the graph trace through RobotRuntime
+
+The standalone executor already writes a bounded, metadata-only Perfetto trace with tick timing, input ages, skips, and overruns. This issue is to expose it through `RobotRuntime.from_graph()` and use it to compare S1/S2 placements.
 
 ```python
 with RobotRuntime.from_graph(graph, placement=placement) as runtime:
@@ -202,6 +208,8 @@ with RobotRuntime.from_graph(graph, placement=placement) as runtime:
 ### Issue 12 — Add same-host process delivery
 
 Run the local pipeline with S2 in another process. Use built-in IPC and typed payload codecs; keep the ports and delivery policies the same. Add a shared-memory ring for compatible frames only if measurements show copying is a bottleneck.
+
+The [two-process Zenoh demo](demos/two_process/README.md) proves explicit endpoints between independent local graphs. It does not implement `Process()` placement, middleware-free IPC, or cross-process shared memory. The in-process ring demo passes Python references only.
 
 ```python
 # Placement sketch; the process API is open.

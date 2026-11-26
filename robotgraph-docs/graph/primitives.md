@@ -1,6 +1,6 @@
 # Graph primitives
 
-Proposed Python API. See [Core](core.md) for compilation and stepping.
+Implemented in `physicalai.graph`. See [Core](core.md) for compilation and stepping.
 
 ```python
 class Graph:
@@ -14,21 +14,21 @@ class Node:
     def output(self, name: str) -> Port: ...
     def start(self, ctx: NodeContext) -> None: ...
     def ready(self, ctx: NodeContext) -> bool: ...
-    def step(self, ctx: NodeContext, inputs: Inputs) -> Outputs: ...
+    def step(self, ctx: NodeContext, inputs: Mapping[str, Message[object]]) -> Mapping[str, object]: ...
     def stop(self, ctx: NodeContext) -> None: ...
 ```
 
-`Port`: read-only `(node, name, direction, data_type)`. `input()` / `output()`
-look up declarations; they don't create ports or read data.
+`Port`: read-only `(node, name, direction, data_type, required)`. `input()` / `output()`
+look up declarations and raise `KeyError` for unknown names; they don't create ports or read data.
 
 ### Node lifecycle
 
-| Hook | Contract |
-| --- | --- |
-| `start(ctx)` | Once per session. Default: no-op. On failure, clean up partial setup and raise. |
-| `ready(ctx)` | Non-blocking, default `True`. `False` delays only this node; no second `start()`. |
+| Hook                | Contract                                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `start(ctx)`        | Once per session. Default: no-op. On failure, clean up partial setup and raise.                                  |
+| `ready(ctx)`        | Non-blocking, default `True`. `False` delays only this node; no second `start()`.                                |
 | `step(ctx, inputs)` | One executor-owned [tick](../timing/overview.md). Inputs and outputs keyed by port name; readiness ≠ fresh data. |
-| `stop(ctx)` | Release resources after a successful `start()`. |
+| `stop(ctx)`         | Release resources after a successful `start()`.                                                                  |
 
 ### Declare ports on a custom node
 
@@ -36,12 +36,14 @@ look up declarations; they don't create ports or read data.
 class WristPolicy(Node):
     inputs = {"wrist": Image, "q": JointState}
     outputs = {"action": Action}
+    optional_inputs = frozenset({"q"})  # Only if this policy can run without state.
 
-policy = WristPolicy("policy")
+policy = WristPolicy("policy", rate=30)
 ```
 
-- Constrain only what the consumer needs, e.g. image resolution if required.
-- Explicitly untyped ports are local-only; process boundaries need a schema or codec.
+- Compile requires a finite, positive `rate` for every scheduled node. `rate=None` has no implicit cadence.
+- Payload types are ordinary Python classes. The producer's type must be a subclass of the consumer's type; `object` deliberately accepts any local payload. Richer contracts and process codecs are proposed.
+- Inputs are `Message` objects. Outputs are payloads or `Captured(payload, timestamp)` if known. `ctx.now()` provides the executor's clock.
 
 ## Wire a graph
 
@@ -69,8 +71,7 @@ class Edge:
         self,
         source: Port,
         destination: Port,
-        *,
-        policy: DeliveryPolicy | None = None,
+        policy: Latest | None = None,
     ) -> None: ...
 ```
 
@@ -82,10 +83,11 @@ Read-only fields. `connect(src, dst)` is shorthand for
 wrist_edge = Edge(
     source=camera.output("image"),
     destination=policy.input("wrist"),
-    policy=Latest(max_age=0.10),  # Seconds; timing API sketch.
+    policy=Latest(max_age=0.10),  # Seconds.
 )
 graph.add_edge(wrist_edge)
 ```
 
-`DeliveryPolicy` controls what the consumer gets; [transport](../transport/primitives.md)
-controls how it gets there. No transport or buffer arguments on `Edge`.
+`Latest` is the implemented delivery policy; omitting it keeps the newest message without an age limit.
+Delivery policy controls what the consumer gets; [transport](../transport/primitives.md) controls how it gets there.
+The standalone executor has no transport or buffer arguments on `Edge`.

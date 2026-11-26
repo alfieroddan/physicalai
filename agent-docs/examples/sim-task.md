@@ -56,5 +56,5 @@ with RobotRuntime.from_graph(graph) as runtime:
 - The command guard checks actions before delivery. Independent hardware safety
   stays in place.
 
-Use the [graph trace](../../robotgraph-docs/validation/overview.md) for timing.
+Once Runtime exposes graph tracing, use it for timing. The [standalone executor trace](../../robotgraph-docs/validation/overview.md) is available now.
 For the same tool surface without graph wiring, see [built-in Runtime](mcp-runtime.md).

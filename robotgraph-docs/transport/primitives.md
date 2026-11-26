@@ -1,6 +1,18 @@
 # Transport primitives
 
-## Requirements
+## What runs today
+
+An executor uses one in-memory `Latest` slot per edge on its own thread. Edges do not cross threads or processes directly. The [demos](../../proposal/demos/README.md) keep transport outside the scheduler:
+
+| Demo         | Boundary                                  | What crosses it                                                                       |
+| ------------ | ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| Async thread | Same process                              | Observation arguments and a future for the result                                     |
+| Shared rings | Same process, two threads                 | Immutable Python tuples through bounded request and reply rings                       |
+| Zenoh        | Private Unix socket, one or two processes | Fixed-size observation and action-chunk messages, not the graph `Message[T]` envelope |
+
+In the [two-process demo](../../proposal/demos/two_process/README.md), the launcher waits for the inference graph to register its Zenoh service before starting the control graph. Each process owns its own plan. The control graph keeps the queue and refill rule; the inference graph handles one request at a time. No router or remote launcher is required.
+
+## Proposed transport requirements
 
 - Integrate with ROS 2, Zenoh, and DDS; don't replace them.
 - Built-in thread and same-host process delivery; no external dependency.
@@ -8,29 +20,12 @@
 
 ## Message envelope
 
-One `Message[T]`; payload types vary. Example, not a wire format:
+The local envelope is implemented in `physicalai.graph`. This example is not a wire format:
 
 ```python
 from dataclasses import dataclass
-from typing import Generic, TypeVar
 
-T = TypeVar("T")
-
-
-@dataclass(frozen=True)
-class Timestamp:
-    ns: int
-    clock_domain: str
-
-
-@dataclass(frozen=True)
-class Message(Generic[T]):
-    source: tuple[str, str]  # Node name and output port name.
-    sequence: int          # Increments within this source's run.
-    captured_at: Timestamp | None
-    published_at: Timestamp
-    payload: T
-
+from physicalai.graph import Message, Timestamp
 
 @dataclass(frozen=True)
 class ImageFrame:
@@ -56,13 +51,13 @@ publication time. Receipt time is neither. See [Timing](../timing/overview.md).
 
 **Port** = payload type. **Codec** = representation. **Transport** = delivery.
 
-| Payload | Possible representations | Delivery considerations |
-| --- | --- | --- |
-| Image frame | Raw array, shared-memory buffer, encoded video | Latest fresh frame; lossy only if allowed |
-| Joint state | Local object or typed message | Latest for control; ordered samples for some recorders |
-| Action / chunk | Local object or typed timed command | Preserve ordering and expiry; no silent drops |
+| Payload        | Possible representations                       | Delivery considerations                                |
+| -------------- | ---------------------------------------------- | ------------------------------------------------------ |
+| Image frame    | Raw array, shared-memory buffer, encoded video | Latest fresh frame; lossy only if allowed              |
+| Joint state    | Local object or typed message                  | Latest for control; ordered samples for some recorders |
+| Action / chunk | Local object or typed timed command            | Preserve ordering and expiry; no silent drops          |
 
-### Mix protocols in the same graph
+### Proposed: mix protocols in the same graph
 
 ```text
 camera.image ─shared memory→ policy.wrist   (same host)
@@ -73,9 +68,9 @@ speech.text  → text_publisher ─ROS 2 or Zenoh→ subscriber
 Unknown capture age may be fine for preview, not for a capture-age limit.
 WebRTC is unrelated to RobotRuntime's `RTCExecution` (Real-Time Chunking).
 
-### Shared-memory ring buffer
+### Proposed: cross-process shared-memory ring buffer
 
-Latest-frame edge, same host, fixed-size slots:
+Latest-frame edge, same host, fixed-size slots. This is different from the demo's in-process rings, which pass Python references:
 
 1. Write pixels, then publish `(slot_index, sequence, metadata)` via IPC.
 2. Lease the matching `(slot_index, sequence)` before reading the newest
@@ -83,13 +78,13 @@ Latest-frame edge, same host, fixed-size slots:
 3. If all slots are leased, drop the incoming frame and count it. Ordered
    action queues need a separate overflow policy.
 
-## TransportProtocol
+## Proposed TransportProtocol
 
 Adapter interface (signatures open): deliver `Message[T]` without changing
 `DeliveryPolicy`. Runtime selects in-process delivery or same-host IPC
 automatically. Shared memory is optional for compatible payloads.
 
-## Connect to an existing ROS 2 node
+## Proposed ROS 2 endpoint nodes
 
 ```python
 # Proposed API. The policy is already registered in graph.
@@ -109,8 +104,6 @@ graph.connect(camera.output("message"), policy.input("wrist"))
 `RosImage` = `sensor_msgs.msg.Image`. Use compatible QoS. The remote publisher
 runs independently; `Ros2PublisherNode` handles the reverse direction.
 
-## Connect graph workers
+## Proposed worker and host connections
 
-[Local graph per host](../examples/s1s2/index.md#3-separate-computers-start-a-local-graph-on-each-host).
-Managed cross-host workers are separate: one transport per worker link;
-deployment API open.
+For separate computers, start a [local graph per host](../examples/s1s2/index.md#3-separate-computers-start-a-local-graph-on-each-host) and connect explicit endpoints. Remote launch is out of scope.

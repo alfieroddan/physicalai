@@ -1,21 +1,27 @@
 # RobotGraph component overview
 
-Proposed backend; existing RobotRuntime APIs remain unchanged.
+`physicalai.graph` is a standalone implementation on this branch. Existing `RobotRuntime` still uses its existing backend.
+
+| Status                                        | Scope                                                                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Implemented                                   | Typed graph, side-effect-free compiler, one calling-thread executor, local `Latest` delivery, opt-in Perfetto traces                                                |
+| [Runnable demos](../proposal/demos/README.md) | Fan-out, sync and async queue refill, an in-process ring, and Zenoh within and across processes. The demos use fake devices and manage their own workers/endpoints. |
+| [Proposed](../proposal/integration.md)        | Plugin-backed nodes, executor-managed placement and IPC, Runtime migration and `from_graph()`, S1/S2 over ROS 2, agent authoring and MCP                            |
 
 ## Graph engine
 
-| Component | API / responsibility |
-| --- | --- |
-| [Graph](graph/primitives.md) | `Graph`, `Node`, `Port`, `Edge` |
-| [Core](graph/core.md) | Compile and step an execution plan |
-| [Timing](timing/overview.md) | Ticks, deadlines, freshness |
-| [Validation and traces](validation/overview.md) | Preflight checks; `run(logging=True)` |
-| [Execution](execution/overview.md) | Run lifecycle and failures |
-| [Transport](transport/primitives.md) | `Message[T]`, local delivery, external endpoints |
+| Component                                       | API / responsibility                             |
+| ----------------------------------------------- | ------------------------------------------------ |
+| [Graph](graph/primitives.md)                    | `Graph`, `Node`, `Port`, `Edge`                  |
+| [Core](graph/core.md)                           | Compile and step an execution plan               |
+| [Timing](timing/overview.md)                    | Ticks, deadlines, freshness                      |
+| [Validation and traces](validation/overview.md) | Preflight checks; `run(logging=True)`            |
+| [Execution](execution/overview.md)              | Run lifecycle and failures                       |
+| [Transport](transport/primitives.md)            | `Message[T]`, local delivery, external endpoints |
 
 ## RobotRuntime API
 
-### Built-in sync, async, and RTC
+### Built-in sync, async, and RTC today
 
 ```python
 from physicalai.runtime import (
@@ -37,16 +43,16 @@ with runtime:
     runtime.run(duration_s=60)
 ```
 
-| Execution | Internal recipe |
-| --- | --- |
-| `SyncExecution()` | Inline inference on queue refill |
-| `AsyncExecution()` | Inference worker + action queue |
-| `RTCExecution()` | Inference worker + RTC chunk handoff |
+| Execution          | Current behavior to preserve         |
+| ------------------ | ------------------------------------ |
+| `SyncExecution()`  | Inline inference on queue refill     |
+| `AsyncExecution()` | Inference worker + action queue      |
+| `RTCExecution()`   | Inference worker + RTC chunk handoff |
 
 No second loop in `PolicySource`. Preserve config, lifecycle, and callbacks.
 Custom `ActionSource` and `Execution` stay on the existing path unless adapted.
 
-### The sync graph underneath RobotRuntime
+### Proposed: the sync graph underneath RobotRuntime
 
 One thread, dependency order. The built-in recipe uses Runtime's `fps` for the
 control loop. The equivalent custom graph declares node rates explicitly.

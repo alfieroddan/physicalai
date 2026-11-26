@@ -43,7 +43,15 @@ class Trace:
         return {"ph": "M", "name": "thread_name", "pid": self._pid, "tid": tid, "args": {"name": name}}
 
     def tick(
-        self, name: str, *, scheduled_ns: int, started_ns: int, finished_ns: int, period_ns: int, outcome: str
+        self,
+        name: str,
+        *,
+        scheduled_ns: int,
+        started_ns: int,
+        finished_ns: int,
+        period_ns: int,
+        outcome: str,
+        input_ages_ns: dict[str, int | None],
     ) -> None:
         """Record one tick, including delay caused by preceding synchronous work."""
         elapsed_ns = finished_ns - scheduled_ns
@@ -53,6 +61,9 @@ class Trace:
             "period_ms": period_ns / _NS_PER_MILLISECOND,
             "deadline_missed": elapsed_ns > period_ns,
             "missed_ticks": elapsed_ns // period_ns,
+            "input_age_ms": {
+                port: None if age is None else age / _NS_PER_MILLISECOND for port, age in input_ages_ns.items()
+            },
         }
         self._append_span(name, started_ns, finished_ns, args)
 

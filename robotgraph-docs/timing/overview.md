@@ -1,27 +1,27 @@
 # Timing: ticks, deadlines, and freshness
 
-| API | Controls |
-| --- | --- |
-| `RobotRuntime(..., fps=30)` | Control-loop target for built-in recipes; inference runs on demand |
-| `RobotRuntime.from_graph(graph)` | No `fps` argument; periodic nodes declare their own rates |
-| `S1PolicyNode(..., rate=10)` | Target for this node's periodic steps, not the robot's command rate |
+| API                                       | Controls                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| `RobotRuntime(..., fps=30)`               | Control-loop target for built-in recipes; inference runs on demand |
+| `GraphExecutor(compile_graph(graph))`     | No `fps` argument; each node declares its own rate                 |
+| Proposed `RobotRuntime.from_graph(graph)` | Retains the graph's node rates                                     |
 
 No graph-wide `fps`. A 10 Hz policy and 30 Hz command node are not a conflict.
 Keep `RTCExecution(fps=...)` matched to the Runtime cycle rate: those two
 settings refer to the same cadence.
 
-Threads affect placement, not rate. Built-in async/RTC workers infer when the
-action queue needs refilling, not in a busy loop. The executor owns periodic
-ticks; ROS 2 receipt updates the available input.
+Period and placement are separate. The standalone executor runs one schedule on the calling thread.
+The demo workers compute on request; the 30 Hz control target does not make the model run at 30 Hz.
 
 ## Measure and report
 
-| Metric | Calculation |
-| --- | --- |
-| Start delay | `actual_start - scheduled_start` |
-| Step duration | `actual_finish - actual_start` |
-| Deadline miss | `actual_finish > completion_deadline`, if declared |
-| Input age | `read_time - capture_or_publication_time`, per contract |
+| Metric        | Calculation                                                                        |
+| ------------- | ---------------------------------------------------------------------------------- |
+| Start delay   | `actual_start - scheduled_start`                                                   |
+| Tick duration | `actual_finish - actual_start`, including readiness, input reads, and publication  |
+| Deadline miss | `actual_finish > scheduled_start + period`                                         |
+| Missed ticks  | Scheduled ticks the executor advances past without replaying                       |
+| Input age     | `read_time - captured_at`, or `read_time - published_at` if capture time is absent |
 
 Use a monotonic clock for worker durations. Count skips separately. Sync
 overruns can delay later steps: measure and warn, don't preempt. No hard
@@ -31,8 +31,7 @@ real-time guarantee, including with separate threads.
 
 - At each tick, read the latest available observation on each input. Don't wait
   for a synchronized batch.
-- `Latest(max_age=...)`: optional per-edge age limit; skip a step with unusable
-  required data.
+- `Latest(max_age=...)`: optional per-edge age limit in seconds. Missing or stale required data skips the step; unavailable optional data is omitted.
 - Intent and observation age are separate; an S2 intent can span multiple S1 ticks.
 - Command consumers still check previously published actions for validity.
-- Preserve capture time. Unrelated clock domains mean unknown age, not zero.
+- Preserve capture time. A different clock domain or a future timestamp means unknown age, not zero. Reject unknown age when an edge has an age limit.

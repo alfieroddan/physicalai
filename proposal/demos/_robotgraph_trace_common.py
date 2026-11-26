@@ -24,7 +24,7 @@ def _delay_ms(mean: float, stddev: float) -> None:
     sleep(max(0.0, _IO_RNG.gauss(mean, stddev)) / 1_000)
 
 
-class _FakeCamera(Node):
+class FakeCamera(Node):
     outputs: ClassVar[Mapping[str, type]] = {"frame": int}
 
     def start(self, _ctx: NodeContext, /) -> None:
@@ -36,7 +36,7 @@ class _FakeCamera(Node):
         return {"frame": self.frame}
 
 
-class _FakeRobot(Node):
+class FakeRobot(Node):
     outputs: ClassVar[Mapping[str, type]] = {"position": float}
 
     def start(self, _ctx: NodeContext, /) -> None:
@@ -143,10 +143,10 @@ class AsyncPolicy(Node):
         self.worker.stop()
 
 
-class _SendAction(Node):
+class SendAction(Node):
     inputs: ClassVar[Mapping[str, type]] = {"action": float}
 
-    def __init__(self, robot: _FakeRobot) -> None:
+    def __init__(self, robot: FakeRobot) -> None:
         super().__init__("Send to robot", rate=RATE_HZ)
         self.robot = robot
 
@@ -165,10 +165,10 @@ class _SendAction(Node):
 def control_graph(policy: Node) -> Graph:
     """Wire the same camera and robot nodes around the selected policy."""
     graph = Graph()
-    camera = graph.add(_FakeCamera("Camera read", rate=RATE_HZ))
-    robot = graph.add(_FakeRobot("Robot state read", rate=RATE_HZ))
+    camera = graph.add(FakeCamera("Camera read", rate=RATE_HZ))
+    robot = graph.add(FakeRobot("Robot state read", rate=RATE_HZ))
     graph.add(policy)
-    send = graph.add(_SendAction(robot))
+    send = graph.add(SendAction(robot))
     graph.connect(camera.output("frame"), policy.input("frame"))
     graph.connect(robot.output("position"), policy.input("position"))
     graph.connect(policy.output("action"), send.input("action"))
