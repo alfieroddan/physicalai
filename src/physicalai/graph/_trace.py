@@ -95,7 +95,10 @@ class Trace:
     def write(self, path: str | Path) -> None:
         """Write the buffered trace after execution, without touching payloads."""
         with self._lock:
-            data = {"traceEvents": self._events.copy(), "otherData": {"dropped_events": self._dropped}}
+            data = {
+                "traceEvents": self._events.copy(),
+                "otherData": {"dropped_events": self._dropped, "monotonic_origin_ns": self._origin_ns},
+            }
         with Path(path).open("w", encoding="utf-8") as file:
             json.dump(data, file)
 
