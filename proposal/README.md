@@ -2,12 +2,12 @@
 
 The standalone `physicalai.graph` compiler and one-thread executor are implemented. The demos use fake devices and show what the design can do without changing `RobotRuntime` or introducing a transport requirement for local graphs.
 
-| Start here                                     | What it covers                                                                                             |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| [Runnable demos](demos/README.md)              | Six wiring diagrams and real Perfetto snapshots, including Zenoh between two independently compiled graphs |
-| [Integration backlog](integration.md)          | Delivered standalone work and proposed plugin, Runtime, transport, and agent integration                   |
-| [Graph design](../robotgraph-docs/overview.md) | The current API and the proposed Runtime surface                                                           |
-| [Agentic design](../agent-docs/overview.md)    | Proposed authoring, local VLM, and MCP workflows                                                           |
+| Start here                                     | What it covers                                                                                        |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [Runnable demos](demos/README.md)              | Wiring diagrams and real Perfetto snapshots, including action-chunk refill and S1/S2 across processes |
+| [Integration backlog](integration.md)          | Delivered standalone work and proposed plugin, Runtime, transport, and agent integration              |
+| [Graph design](../robotgraph-docs/overview.md) | The current API and the proposed Runtime surface                                                      |
+| [Agentic design](../agent-docs/overview.md)    | Proposed authoring, local VLM, and MCP workflows                                                      |
 
 ## Presentations
 

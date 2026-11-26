@@ -1,5 +1,7 @@
 # Two RobotGraphs over Zenoh
 
+This page describes the [remote action-chunk demo](zenoh_two_process_demo.py). The [S1/S2 demo](s1s2_zenoh_demo.py) uses the same launcher and private Zenoh socket, but publishes camera samples and slow S2 goals instead of requesting action chunks. See its [wiring and trace](../README.md#7-s1s2-in-two-processes-over-zenoh).
+
 One Python file runs both roles. The control process starts a second Python process for inference. Each process compiles and executes its own graph.
 
 ```mermaid

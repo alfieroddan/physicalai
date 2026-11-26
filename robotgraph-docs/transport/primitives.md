@@ -4,13 +4,15 @@
 
 An executor uses one in-memory `Latest` slot per edge on its own thread. Edges do not cross threads or processes directly. The [demos](../../proposal/demos/README.md) keep transport outside the scheduler:
 
-| Demo         | Boundary                                  | What crosses it                                                                       |
-| ------------ | ----------------------------------------- | ------------------------------------------------------------------------------------- |
-| Async thread | Same process                              | Observation arguments and a future for the result                                     |
-| Shared rings | Same process, two threads                 | Immutable Python tuples through bounded request and reply rings                       |
-| Zenoh        | Private Unix socket, one or two processes | Fixed-size observation and action-chunk messages, not the graph `Message[T]` envelope |
+| Demo         | Boundary                                  | What crosses it                                                                      |
+| ------------ | ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| Async thread | Same process                              | Observation arguments and a future for the result                                    |
+| Shared rings | Same process, two threads                 | Immutable Python tuples through bounded request and reply rings                      |
+| Zenoh        | Private Unix socket, one or two processes | Fixed-size observation/action chunks or timestamped fake camera samples and S2 goals |
 
 In the [two-process demo](../../proposal/demos/two_process/README.md), the launcher waits for the inference graph to register its Zenoh service before starting the control graph. Each process owns its own plan. The control graph keeps the queue and refill rule; the inference graph handles one request at a time. No router or remote launcher is required.
+
+The [S1/S2 demo](../../proposal/demos/README.md#7-s1s2-in-two-processes-over-zenoh) uses publish/subscribe instead of request/reply. Only camera samples and goal intents cross the socket. Received source timestamps retain their age because both executors use the same host's monotonic clock. Neither demo sends graph `Message[T]` envelopes over the socket.
 
 ## Proposed transport requirements
 

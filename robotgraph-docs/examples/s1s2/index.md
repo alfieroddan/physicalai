@@ -1,6 +1,6 @@
 # System 1 / System 2: user API examples
 
-Proposed integrations. The standalone executor exists, but the plugin nodes, `from_graph()`, placement, and ROS 2 nodes below are not implemented. Camera, robot, and models are assumed to be configured. For runnable fake-device examples, see the [demos](../../../proposal/demos/README.md).
+Proposed integrations. The standalone executor exists, but the plugin nodes, `from_graph()`, placement, and ROS 2 nodes below are not implemented. Camera, robot, and models are assumed to be configured. For a runnable fake-device implementation, see the [two-process S1/S2 demo over Zenoh](../../../proposal/demos/README.md#7-s1s2-in-two-processes-over-zenoh).
 
 ## 1. Local: one process, one thread
 
@@ -51,7 +51,7 @@ Once Runtime delegates tracing, compare with `run(logging=True)`. See [standalon
 ## 3. Separate computers: start a local graph on each host
 
 Start each program on its own host. ROS 2 connects the graphs; no remote launcher.
-For a runnable same-host example of separate graphs with explicit endpoints, see the [two-process Zenoh demo](../../../proposal/demos/two_process/README.md).
+The runnable S1/S2 demo follows the same split on one host, with private Zenoh endpoints instead of ROS 2.
 
 ### Robot computer: camera, state, S1, and commands
 

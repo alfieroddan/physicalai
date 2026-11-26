@@ -170,6 +170,8 @@ Design: [Inference triggers](../robotgraph-docs/graph/core.md#what-drives-infere
 
 ### Issue 10 — Add `from_graph()` and prove it with local S1/S2
 
+The [two-process S1/S2 demo](demos/README.md#7-s1s2-in-two-processes-over-zenoh) exercises the planner/control split with fake devices and explicit Zenoh endpoints. Plugin-backed nodes, placement, and `RobotRuntime.from_graph()` remain proposed.
+
 Reuse existing camera and robot plugins. Give S2 the camera image, give S1 the image, robot state, and S2 intent, then send S1 actions to the command node. Run the same graph first on one thread, then with one worker per model. The rates are per node; there is no graph-wide `fps`.
 
 ```python
