@@ -2,14 +2,14 @@
 
 ## Before running
 
-[`compile_graph()`](../graph/core.md#compile) checks nodes, ports, edges, cycles, and declared timing and delivery values. It cannot verify hardware readiness or guarantee deadlines.
+[`graph.compile()`](../graph/core.md#compile) checks nodes, ports, edges, cycles, and declared timing and delivery values. It cannot verify hardware readiness or guarantee deadlines.
 
 ## During a run
 
 ```python
-from physicalai.graph import GraphExecutor, compile_graph
+from physicalai.graph import GraphExecutor
 
-GraphExecutor(compile_graph(graph)).run(
+GraphExecutor(graph.compile()).run(
     duration_s=60, logging=True, trace_path="robotgraph-trace.json",
 )
 ```

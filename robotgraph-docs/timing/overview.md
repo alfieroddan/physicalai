@@ -3,7 +3,7 @@
 | API                                       | Controls                                                           |
 | ----------------------------------------- | ------------------------------------------------------------------ |
 | `RobotRuntime(..., fps=30)`               | Control-loop target for built-in recipes; inference runs on demand |
-| `GraphExecutor(compile_graph(graph))`     | No `fps` argument; each node declares its own rate                 |
+| `GraphExecutor(graph.compile())`          | No `fps` argument; each node declares its own rate                 |
 | Proposed `RobotRuntime.from_graph(graph)` | Retains the graph's node rates                                     |
 
 No graph-wide `fps`. A 10 Hz policy and 30 Hz command node are not a conflict.

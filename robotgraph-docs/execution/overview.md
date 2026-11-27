@@ -1,9 +1,9 @@
 # Execution: a standalone graph session
 
 ```python
-from physicalai.graph import GraphExecutor, compile_graph
+from physicalai.graph import GraphExecutor
 
-executor = GraphExecutor(compile_graph(graph))
+executor = GraphExecutor(graph.compile())
 executor.run(duration_s=60)  # Blocks until duration, stop(), or failure.
 ```
 

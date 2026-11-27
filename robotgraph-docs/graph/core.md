@@ -1,6 +1,6 @@
 # Graph core: build, compile, run
 
-`Graph` → `compile_graph()` → `ExecutionPlan` → `GraphExecutor.run()`.
+`Graph` → `graph.compile()` → `ExecutionPlan` → `GraphExecutor.run()`.
 The standalone executor uses one calling thread. `RobotRuntime.from_graph()` is a proposed integration, not the current entry point.
 
 ## Build
@@ -25,9 +25,9 @@ The [two-process Zenoh demo](../../proposal/demos/two_process/README.md) compile
 ## Run
 
 ```python
-from physicalai.graph import GraphExecutor, compile_graph
+from physicalai.graph import GraphExecutor
 
-plan = compile_graph(graph)
+plan = graph.compile()
 GraphExecutor(plan).run(duration_s=60)
 ```
 

@@ -10,7 +10,7 @@ Run from the Runtime repository root:
 from collections.abc import Mapping
 from typing import ClassVar
 
-from physicalai.graph import Graph, GraphExecutor, Message, Node, NodeContext, compile_graph
+from physicalai.graph import Graph, GraphExecutor, Message, Node, NodeContext
 
 
 class _Counter(Node):
@@ -42,4 +42,4 @@ if __name__ == "__main__":
     graph.connect(counter.output("count"), left.input("sample"))
     graph.connect(counter.output("count"), right.input("sample"))
 
-    GraphExecutor(compile_graph(graph)).run(duration_s=1)
+    GraphExecutor(graph.compile()).run(duration_s=1)

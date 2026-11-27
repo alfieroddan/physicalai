@@ -58,9 +58,9 @@ graph.connect(counter.output("count"), recorder.input("sample"))
 
 ```python
 # Standalone runner; no RobotRuntime or hardware.
-from physicalai.graph import GraphExecutor, compile_graph
+from physicalai.graph import GraphExecutor
 
-plan = compile_graph(graph)
+plan = graph.compile()
 GraphExecutor(plan).run(duration_s=1, logging=True, trace_path="counter-trace.json")
 ```
 
@@ -91,7 +91,7 @@ graph.connect(wrist.output("image"), policy.input("wrist"))
 graph.connect(state.output("state"), policy.input("q"))
 graph.connect(policy.output("action"), commands.input("action"))
 
-GraphExecutor(compile_graph(graph)).run(duration_s=1)
+GraphExecutor(graph.compile()).run(duration_s=1)
 ```
 
 **Done when:** the graph runs with a configured simulated robot plugin, no `RobotRuntime`, and no new drivers. State and command nodes share one robot connection, and missing or expired actions are not sent. This first pipeline uses a periodic policy node; built-in sync, async, and RTC refill rules come in Epic 2.
@@ -103,7 +103,8 @@ Keep placement separate from wiring and rate. A local `Latest` edge holds one me
 The [async and ring demos](demos/README.md) manage their own model worker. They do not implement executor-managed `Thread()` placement or cross-thread graph edges.
 
 ```python
-plan = compile_graph(graph, placement={"recorder": Thread()})
+# Proposed placement argument; compile() only supports one worker today.
+plan = graph.compile(placement={"recorder": Thread()})
 GraphExecutor(plan).run(duration_s=1)
 ```
 

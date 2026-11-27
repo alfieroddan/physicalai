@@ -10,7 +10,7 @@ from random import Random
 from time import sleep
 from typing import ClassVar, Protocol, cast
 
-from physicalai.graph import Graph, GraphExecutor, Message, Node, NodeContext, compile_graph
+from physicalai.graph import Graph, GraphExecutor, Message, Node, NodeContext
 
 RATE_HZ = 30
 CHUNK_SIZE = 8
@@ -177,5 +177,6 @@ def control_graph(policy: Node) -> Graph:
 
 def run_demo(policy: Node, trace_path: str) -> None:
     """Run the same read → policy → send graph for either policy."""
-    GraphExecutor(compile_graph(control_graph(policy))).run(duration_s=2, logging=True, trace_path=trace_path)
+    graph = control_graph(policy)
+    GraphExecutor(graph.compile()).run(duration_s=2, logging=True, trace_path=trace_path)
     print(f"Open {trace_path} in https://ui.perfetto.dev")

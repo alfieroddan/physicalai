@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from physicalai.graph.model import Latest
 
 if TYPE_CHECKING:
-    from physicalai.graph.model import Edge, Graph, Node
+    from physicalai.graph.model import Edge, Node
 
 NANOSECONDS_PER_SECOND = 1_000_000_000
 
@@ -76,10 +76,8 @@ def _validate_inputs(plan: NodePlan) -> None:
             raise ValueError(msg)
 
 
-def compile_graph(graph: Graph) -> ExecutionPlan:
-    """Validate the graph without starting nodes or opening channels.
-
-    Unsupported or incompatible port types and edge policies cause a TypeError.
+def compile_plan(nodes: tuple[Node, ...], edges: tuple[Edge, ...]) -> ExecutionPlan:
+    """Validate node declarations and wiring for the standalone executor.
 
     Returns:
         The fixed schedule and routes for the graph.
@@ -87,11 +85,10 @@ def compile_graph(graph: Graph) -> ExecutionPlan:
     Raises:
         ValueError: A timing value is invalid, an input is missing, or wiring has a cycle.
     """
-    nodes = graph.nodes
     indices = {node.name: index for index, node in enumerate(nodes)}
     incoming: list[list[Edge]] = [[] for _ in nodes]
     outgoing: list[list[Edge]] = [[] for _ in nodes]
-    for edge in graph.edges:
+    for edge in edges:
         incoming[indices[edge.destination.node.name]].append(edge)
         outgoing[indices[edge.source.node.name]].append(edge)
 
@@ -101,11 +98,11 @@ def compile_graph(graph: Graph) -> ExecutionPlan:
         _validate_inputs(plan)
         plans.append(plan)
 
-    for edge in graph.edges:
+    for edge in edges:
         _validate_edge(edge)
 
     # A heap makes registration order the tie-breaker, even for newly unblocked nodes.
-    remaining = [len(edges) for edges in incoming]
+    remaining = [len(routes) for routes in incoming]
     ready = [index for index, count in enumerate(remaining) if count == 0]
     ordered = []
     while ready:

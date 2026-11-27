@@ -3,9 +3,10 @@
 
 """Build, compile, and run standalone timing-aware graphs."""
 
-from physicalai.graph.compiler import ExecutionPlan, compile_graph
+from physicalai.graph.builder import Graph
+from physicalai.graph.compiler import ExecutionPlan
 from physicalai.graph.executor import Clock, GraphExecutor, NodeError
-from physicalai.graph.model import Captured, Edge, Graph, Latest, Message, Node, NodeContext, Port, Timestamp
+from physicalai.graph.model import Captured, Edge, Latest, Message, Node, NodeContext, Port, Timestamp
 
 __all__ = [
     "Captured",
@@ -21,5 +22,4 @@ __all__ = [
     "NodeError",
     "Port",
     "Timestamp",
-    "compile_graph",
 ]

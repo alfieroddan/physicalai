@@ -13,7 +13,7 @@ from select import select
 from signal import SIGINT
 from tempfile import TemporaryDirectory
 
-from physicalai.graph import Graph, GraphExecutor, compile_graph
+from physicalai.graph import Graph, GraphExecutor
 
 
 def _merge_traces(paths: tuple[Path, Path], labels: tuple[str, str], output: Path) -> None:
@@ -60,7 +60,8 @@ def run_pair(
     if args.inference:
         endpoint, child_trace = args.inference
         try:
-            GraphExecutor(compile_graph(inference(endpoint))).run(duration_s=60, logging=True, trace_path=child_trace)
+            graph = inference(endpoint)
+            GraphExecutor(graph.compile()).run(duration_s=60, logging=True, trace_path=child_trace)
         except KeyboardInterrupt:
             pass  # The parent stops the child after control finishes.
         return
@@ -77,9 +78,8 @@ def run_pair(
                 if pipe is None or not select([pipe], [], [], 5)[0] or pipe.readline().strip() != "ready":
                     msg = "Inference graph did not become ready"
                     raise RuntimeError(msg)
-                GraphExecutor(compile_graph(control(endpoint))).run(
-                    duration_s=duration_s, logging=True, trace_path=control_trace
-                )
+                graph = control(endpoint)
+                GraphExecutor(graph.compile()).run(duration_s=duration_s, logging=True, trace_path=control_trace)
             finally:
                 _stop_child(child)
             if child.returncode != 0:
