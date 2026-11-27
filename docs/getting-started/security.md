@@ -18,6 +18,19 @@ directory. This is intended for a trusted operator and does not confine the file
 Automation must not populate it from untrusted input unless the automation first applies an allowlist or its
 own base-directory containment policy.
 
+## Isolated environments are not a security sandbox
+
+`physicalai.isolate` prepares a separate Python environment and launches an entrypoint in a child process. The
+virtual environment isolates installed Python packages; it does not restrict filesystem, network, device, or
+operating-system privileges. The child does not inherit the host's `PYTHONPATH`, `PYTHONHOME`, or `VIRTUAL_ENV`;
+`VIRTUAL_ENV` and the front of `PATH` point at the prepared environment. Other environment variables pass through,
+so settings such as `LD_LIBRARY_PATH` still affect which native libraries the child loads. Neither the
+entrypoint script's folder nor the working directory is on the child's import path; a worker that spans several
+files must be a folder with `__main__.py`, and only modules inside that folder are importable. `uv sync` can execute
+package build backends, and the launched entrypoint runs with the privileges of the calling `physicalai` process.
+Full Git commit IDs and patch digests make sources reproducible; they do not establish that the code is safe.
+Prepare and run only projects and entrypoints you trust.
+
 ## Use only trusted, reviewed policies
 
 An exported policy package (`manifest.json` plus artifacts) runs with the same privileges as the
@@ -37,7 +50,9 @@ its contents.
 
 The `SharedRobot` network transport uses Zenoh `/action`, `/state`, and `/metadata` traffic to share one robot
 connection across processes. It has no application-level authentication, access control, or encryption of
-its own. Local-only mode is the default.
+its own. Local-only mode is the default: only the owner opens a TCP listener, bound to `127.0.0.1`.
+Subscriber, client, and discovery sessions do not open TCP listeners, even with `allow_remote=True`;
+remote-mode sessions use scouting and outbound connections to reach owners.
 
 If you enable `allow_remote=True` (`--allow_remote` on `physicalai robot serve`/`discover`), use it only on
 an isolated, firewalled robot-cell network (VLAN/firewall) or with Zenoh ACL/TLS configured yourself — the
@@ -48,6 +63,27 @@ actions to the robot.
 `SharedRobot` checks metadata protocol version, dimensions, and joint-name consistency before attaching.
 These checks detect malformed or incompatible metadata; they do not authenticate the publisher or prove its
 identity.
+
+## Remote inference has no built-in network authentication
+
+The `RemoteInferenceModel` Zenoh transport does not provide application-level authentication or encryption.
+The server binds to loopback by default; SSH tunneling is the recommended way to connect from another host.
+Tailscale access relies on tailnet ACLs. Direct LAN access is unauthenticated and must be limited to trusted
+clients on an isolated, firewalled network. The server requires `--allow-all-interfaces` for wildcard binds
+(`0.0.0.0` or `::`); a specific LAN or Tailscale address can be selected with `--host` and should still be
+protected by network policy. Do not expose the listener to an untrusted network.
+
+The server does not isolate clients into separate sessions: every reachable peer can submit predictions and
+resets to the same model worker. A peer can reset shared policy state, supersede another client's pending
+prediction or reset, and consume inference capacity. Queue coalescing bounds pending work, but it does not
+authorize callers or prevent cross-client interference. Restrict network reachability with SSH, tailnet ACLs,
+or firewall rules; do not treat the model namespace or protocol handshake as client authentication.
+
+The client's optional `expected_policy` and `expected_manifest_sha256` checks
+detect accidental configuration mismatches. The manifest hash is reported by
+the server and is not signed, so matching it does not authenticate the server or
+prove artifact integrity. Use an authenticated connection, such as an SSH tunnel
+with host-key verification, when server identity and transport integrity matter.
 
 ## Action validation currently varies by robot driver
 
