@@ -39,7 +39,7 @@ execution = RTCExecution(fps=30)
 action_queue = RTCActionQueue()
 ```
 
-`fps` here is the robot control rate `RTCExecution` uses to turn measured inference latency into an action delay. In YAML, both objects sit under `action_source.init_args`:
+`fps` here is the robot control rate `RTCExecution` uses to measure delay in action ticks. By default it times each request from observation publication to queue merge, using warmup timings until steady-state samples are available. In YAML, both objects sit under `action_source.init_args`:
 
 ```yaml
 action_source:

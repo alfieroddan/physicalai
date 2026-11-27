@@ -489,6 +489,7 @@ class TestRTCExecutionValidation:
             ({"execution_horizon": -1}, "execution_horizon must be positive"),
             ({"max_guidance_weight": -0.1}, "max_guidance_weight must be non-negative"),
             ({"fps": 0.0}, "fps must be positive"),
+            ({"fps": float("nan")}, "fps must be positive and finite"),
             ({"chunk_size": 0}, "chunk_size must be positive"),
             ({"queue_threshold": -1}, "queue_threshold must be non-negative"),
         ],
@@ -517,29 +518,19 @@ class TestRTCExecutionValidation:
             ex.start(_rtc_model(chunk_size=20), RTCActionQueue())
 
     def test_delay_clamped_to_execution_horizon(self) -> None:
-        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime import RTCExecution
 
-        tracker = MagicMock()
-        tracker.compute_delay.return_value = 99
-        queue = RTCActionQueue()
-        queue.push_chunk(np.zeros((20, 3), dtype=np.float32))
-        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
-        ex._rtc_queue = queue  # noqa: SLF001
-
-        inputs = ex._inject_rtc_inputs({})  # noqa: SLF001
+        ex = RTCExecution(chunk_size=20, execution_horizon=5)
+        inputs = ex._inject_rtc_inputs({}, np.zeros((20, 3), dtype=np.float32), 99)  # noqa: SLF001
 
         assert int(inputs["inference_delay"]) == 5
 
     def test_delay_zero_when_no_previous_chunk(self) -> None:
         """With guidance suppressed there is no horizon to spend on delay."""
-        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime import RTCExecution
 
-        tracker = MagicMock()
-        tracker.compute_delay.return_value = 99
-        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
-        ex._rtc_queue = RTCActionQueue()  # noqa: SLF001
-
-        inputs = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)})  # noqa: SLF001
+        ex = RTCExecution(chunk_size=20, execution_horizon=5)
+        inputs = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)}, None, 99)  # noqa: SLF001
 
         assert int(inputs["inference_delay"]) == 0
         # The first chunk has no real predecessor, so guidance is suppressed with
@@ -685,8 +676,7 @@ class TestRTCExecutionObsSlot:
         with patch.object(queue, "below_threshold", new=below_threshold), patch.object(queue, "merge", new=merge):
             ex.start(model, queue)
             try:
-                with ex._obs_lock:  # noqa: SLF001
-                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None)  # noqa: SLF001
+                ex.maybe_request({"state": np.zeros(3, dtype=np.float32)})
                 assert entered.wait(timeout=5.0)
 
                 publisher = threading.Thread(
@@ -750,9 +740,7 @@ class TestRTCExecutionObsSlot:
         ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         worker = ex._thread  # noqa: SLF001
-        with ex._obs_lock:  # noqa: SLF001
-            observation = {"state": np.zeros(3, dtype=np.float32)}
-            ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+        ex.maybe_request({"state": np.zeros(3, dtype=np.float32)})
         assert entered.wait(timeout=5.0)
 
         reset_done = threading.Event()
@@ -787,9 +775,7 @@ class TestRTCExecutionObsSlot:
         ex._model_lock.acquire()  # noqa: SLF001
         reset_thread: threading.Thread | None = None
         try:
-            with ex._obs_lock:  # noqa: SLF001
-                observation = {"state": np.zeros(3, dtype=np.float32)}
-                ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+            ex.maybe_request({"state": np.zeros(3, dtype=np.float32)})
             deadline = time.monotonic() + 5.0
             while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
@@ -1278,9 +1264,8 @@ class TestRestartAfterStop:
         ex.stop()
 
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
-        with ex._obs_lock:  # noqa: SLF001
-            stale = {"state": np.full(3, 99.0, dtype=np.float32)}
-            ex._obs_slot = (stale, ex._incarnation, None)  # noqa: SLF001
+        ex.maybe_request({"state": np.full(3, 99.0, dtype=np.float32)})
+        assert ex._obs_slot is not None  # noqa: SLF001
 
         ex.start(model, queue)
         try:
@@ -1318,7 +1303,7 @@ class TestRestartAfterStop:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
         tracker = MagicMock()
-        tracker.compute_delay.return_value = 0
+        tracker.compute_delay.return_value = 2
         model = _rtc_model()
         queue = RTCActionQueue()
         ex = RTCExecution(
@@ -1346,6 +1331,7 @@ class TestRestartAfterStop:
             queue.clear()
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
             tracker.on_reset.assert_not_called()
+            assert ex.queue_threshold == 7
         finally:
             ex.stop()
 
@@ -1416,8 +1402,7 @@ class TestStopTimeoutStraggler:
 
             model.side_effect = blocking
             ex.start(model, queue)
-            with ex._obs_lock:  # noqa: SLF001
-                ex._obs_slot = (dict(obs), ex._incarnation, None)  # noqa: SLF001
+            ex.maybe_request(dict(obs))
 
         assert entered.wait(timeout=5.0), "worker never entered inference"
         straggler = ex._thread  # noqa: SLF001

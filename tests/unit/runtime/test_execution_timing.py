@@ -14,14 +14,18 @@ import logging
 import re
 import threading
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import Mock
 
 import numpy as np
-import pytest
 
-from physicalai.runtime import AsyncExecution, ChunkedActionQueue
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue, RTCActionQueue, RTCExecution
+from physicalai.runtime.execution import rtc
 
 if TYPE_CHECKING:
+    import pytest
+
     from physicalai.inference.model import InferenceModel
 
 CHUNK = 20
@@ -59,6 +63,93 @@ class _GatedModel:
 
 def _obs(tick: int) -> dict[str, Any]:
     return {"state": np.array([[tick, tick]], dtype=np.float32)}
+
+
+def test_rtc_uses_the_observation_cursor_for_guidance_and_trim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pop before the worker wakes must not shift the guidance or delivery by a tick."""
+    queue = RTCActionQueue()
+    ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, queue_threshold=5)
+    tail_read, release = threading.Event(), threading.Event()
+    get_left_over = queue.get_left_over
+
+    def gated_tail(**kwargs: Any) -> np.ndarray | None:
+        if queue.remaining:
+            tail_read.set()
+            assert release.wait(timeout=2.0)
+        return get_left_over(**kwargs)
+
+    model = Mock(side_effect=lambda obs: {"action": obs["state"] + np.arange(CHUNK)[:, None]})
+    monkeypatch.setattr(queue, "get_left_over", gated_tail)
+    ex.start(model, queue)
+    try:
+        ex.warmup(_obs(0))
+        request_tick = CHUNK - 4
+        for _ in range(request_tick):
+            assert queue.pop() is not None
+        ex.maybe_request(_obs(request_tick))
+        assert tail_read.wait(timeout=2.0)
+        # Force the request tick's pop to land before the worker reads the tail.
+        assert queue.pop() is not None
+        release.set()
+        assert _wait_for(lambda: ex.inference_count == 2)
+
+        inputs = model.call_args.args[0]
+        assert inputs["prev_chunk_left_over"][0, 0, 0] == request_tick
+        assert inputs["execution_horizon"] == 4  # The rest of the model input is padding.
+        action = queue.pop()
+        assert action is not None
+        assert action[0] == request_tick + 1
+    finally:
+        release.set()
+        ex.stop()
+
+
+def test_rtc_measures_delivery_delay_without_a_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed delay from warmup, then track delivery time across refills and reset."""
+    queue = RTCActionQueue()
+    ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, fps=32, warmup_inferences=1)
+    now = 0.0
+    model_ticks = iter([2, 3, 1, 1])
+    merge = queue.merge
+
+    def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+        nonlocal now
+        now += next(model_ticks) / 32
+        return {"action": np.zeros((CHUNK, 2), dtype=np.float32)}
+
+    def slow_merge(raw: np.ndarray, processed: np.ndarray, action_index_before_inference: int | None = None) -> None:
+        nonlocal now
+        now += 1 / 32
+        merge(raw, processed, action_index_before_inference)
+
+    model = Mock(side_effect=predict)
+    monkeypatch.setattr(rtc, "time", SimpleNamespace(perf_counter=lambda: now, sleep=time.sleep))
+    monkeypatch.setattr(queue, "merge", slow_merge)
+
+    def refill() -> None:
+        before = ex.inference_count
+        while queue.remaining >= ex.queue_threshold:
+            assert queue.pop() is not None
+        ex.maybe_request(_obs(CHUNK - queue.remaining))
+        assert _wait_for(lambda: ex.inference_count == before + 1)
+
+    ex.start(model, queue)
+    try:
+        ex.warmup(_obs(0))
+        assert ex.queue_threshold == 5 + 3  # Warmup measured model + merge.
+        refill()
+        assert model.call_args.args[0]["inference_delay"] == 3
+        assert ex.queue_threshold == 5 + 4
+        refill()
+        assert ex.queue_threshold == 5 + 4  # Keep the worst steady-state sample.
+
+        ex.reset(reset_model=False)
+        queue.clear()
+        assert ex.queue_threshold == 5 + 4  # Keep the estimate until a fresh sample.
+        ex.warmup(_obs(0))
+        assert ex.queue_threshold == 5 + 2
+    finally:
+        ex.stop()
 
 
 class _Driver:

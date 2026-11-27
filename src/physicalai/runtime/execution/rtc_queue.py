@@ -96,19 +96,20 @@ class RTCActionQueue:
             self._total_pops += 1
             return action
 
-    def get_left_over(self) -> np.ndarray | None:
-        """Return unconsumed raw (normalized) actions.
+    def get_left_over(self, *, from_index: int | None = None) -> np.ndarray | None:
+        """Return raw (normalized) actions starting at the requested cursor.
 
-        Called from the RTC background thread to build
-        ``prev_chunk_left_over`` for the next inference call.
+        Args:
+            from_index: Cursor captured with the observation. Defaults to the live cursor.
 
         Returns:
             Array of shape ``(remaining, action_dim)`` or ``None``.
         """
         with self._lock:
-            if self._raw is None or self._cursor >= len(self._raw):
+            index = self._cursor if from_index is None else from_index
+            if self._raw is None or not 0 <= index < len(self._raw):
                 return None
-            return self._raw[self._cursor :].copy()
+            return self._raw[index:].copy()
 
     def merge(
         self,
@@ -126,9 +127,8 @@ class RTCActionQueue:
         Args:
             raw: Raw model output, shape ``(chunk_size, action_dim)``.
             processed: Postprocessed actions, shape ``(chunk_size, robot_dof)``.
-            action_index_before_inference: Cursor snapshot taken before
-                inference started. Used to compute how many actions were
-                consumed during inference.
+            action_index_before_inference: Cursor at the origin of the new chunk,
+                normally captured when publishing the observation.
         """
         with self._lock:
             # Trim = actual actions consumed during inference

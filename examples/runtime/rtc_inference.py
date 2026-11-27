@@ -179,7 +179,6 @@ def main() -> None:
         execution_horizon=args.execution_horizon,
         fps=args.fps,
         max_guidance_weight=args.max_guidance_weight,
-        latency_tracker=latency_tracker,
     )
 
     # ── Callbacks ──
